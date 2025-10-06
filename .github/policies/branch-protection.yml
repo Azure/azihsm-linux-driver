@@ -1,0 +1,12 @@
+# Documentation for branch policy: https://aka.ms/gim/docs/policy/branch-protection
+name: SDL
+description: Branch policies update
+resource: repository
+where: 
+configuration:
+  branchProtectionRules:
+    - branchNamePattern: "main"
+      requiredApprovingReviewsCount: 1
+      requireLastPushApproval: true
+      allowsForcePushes: false
+      allowsDeletions: false

@@ -1288,7 +1288,7 @@ static int azihsm_ioctl_reset_device(struct azihsm_ctrl *ctrl,
 	if (copy_from_user(&info, (void __user *)arg, sizeof(info))) {
 		err = -EFAULT;
 		AZIHSM_DEV_LOG_ERROR(dev, "[%s:%d] copy from user failed\n",
-				     __func__, __LINE__);
+				     __FUNCTION__, __LINE__);
 
 		goto err;
 	}
@@ -1296,7 +1296,7 @@ static int azihsm_ioctl_reset_device(struct azihsm_ctrl *ctrl,
 	if (info.hdr.szioctldata < sizeof(info)) {
 		err = -EINVAL;
 		AZIHSM_DEV_LOG_ERROR(dev, "[%s] invalid argument size [%d]",
-				     __func__, info.hdr.szioctldata);
+				     __FUNCTION__, info.hdr.szioctldata);
 
 		goto err;
 	}
@@ -1306,12 +1306,12 @@ static int azihsm_ioctl_reset_device(struct azihsm_ctrl *ctrl,
 		info.rst_out_data.abort_sts = ABORT_STATUS_INVALID_DEVICE_STATE;
 
 		AZIHSM_DEV_LOG_ERROR(dev, "[%s] Invalid Device State [%d]",
-				     __func__, AZIHSM_CTRL_GET_STATE(ctrl));
+				     __FUNCTION__, AZIHSM_CTRL_GET_STATE(ctrl));
 
 		if (copy_to_user((void __user *)arg, &info, sizeof(info))) {
 			err = -EFAULT;
 			AZIHSM_DEV_LOG_ERROR(dev, "[%s:%d] copy to user failed",
-					     __func__, __LINE__);
+					     __FUNCTION__, __LINE__);
 		}
 
 		return err;
@@ -1323,12 +1323,12 @@ static int azihsm_ioctl_reset_device(struct azihsm_ctrl *ctrl,
 		info.rst_out_data.abort_sts = ABORT_STATUS_INVALID_TYPE;
 
 		AZIHSM_DEV_LOG_ERROR(dev, "[%s] Invalid Abort Type [%d]",
-				     __func__, info.rst_in_data.abort_type);
+				     __FUNCTION__, info.rst_in_data.abort_type);
 
 		if (copy_to_user((void __user *)arg, &info, sizeof(info))) {
 			err = -EFAULT;
 			AZIHSM_DEV_LOG_ERROR(dev, "[%s:%d] copy to user failed",
-					     __func__, __LINE__);
+					     __FUNCTION__, __LINE__);
 		}
 
 		return err;
@@ -1339,12 +1339,12 @@ static int azihsm_ioctl_reset_device(struct azihsm_ctrl *ctrl,
 		info.rst_out_data.abort_sts = ABORT_STATUS_ALREADY_IN_PROGRESS;
 
 		AZIHSM_DEV_LOG_ERROR(dev, "[%s] Abort Already In Progress [%d]",
-				     __func__, info.rst_in_data.abort_type);
+				     __FUNCTION__, info.rst_in_data.abort_type);
 
 		if (copy_to_user((void __user *)arg, &info, sizeof(info))) {
 			err = -EFAULT;
 			AZIHSM_DEV_LOG_ERROR(dev, "[%s:%d] copy to user failed",
-					     __func__, __LINE__);
+					     __FUNCTION__, __LINE__);
 		}
 		return err;
 	}
@@ -1355,14 +1355,14 @@ static int azihsm_ioctl_reset_device(struct azihsm_ctrl *ctrl,
 	if (err) {
 		AZIHSM_DEV_LOG_ERROR(
 			dev, "[%s] User Requested Abort Failed [err:%d]",
-			__func__, err);
+			__FUNCTION__, err);
 		info.rst_out_data.abort_sts = ABORT_STATUS_FAILED;
 	}
 
 	if (copy_to_user((void __user *)arg, &info, sizeof(info))) {
 		err = -EFAULT;
 		AZIHSM_DEV_LOG_ERROR(dev, "[%s:%d] copy to user failed",
-				     __func__, __LINE__);
+				     __FUNCTION__, __LINE__);
 	}
 
 err:

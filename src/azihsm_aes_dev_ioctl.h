@@ -12,6 +12,11 @@
 #define AZIHSM_AES_IV_LEN 12
 #define AZIHSM_AES_CMD_SPEC_SZ 16
 
+#define AZIHSM_AES_GCM_AAD_SZ_ALIGNMENT_BYTES	32
+#define AZIHSM_AES_GCM_DATA_SZ_ALIGNMENT_BYTES	16
+#define AZIHSM_MAX_UNALIGNED_DATA_SZ		(AZIHSM_AES_GCM_DATA_SZ_ALIGNMENT_BYTES - 1)
+#define AZIHSM_IS_AAD_ALIGNED(_size,_align) (((_size) % (_align)) == 0)
+
 //Define the fast path operation codes here
 enum azihsm_aes_op_code {
 	AZIHSM_AES_OP_CODE_START = 0,
@@ -64,11 +69,16 @@ enum aes_xts_data_unit {
 	((_x >= AZIHSM_AES_DUL_START) && (_x <= AZIHSM_AES_DUL_END))
 
 struct gcm_params {
-	u32 key_id; /**< key identifier to use for the GCM operation **/
-	u8 tag[AZIHSM_AES_TAG_LEN]; /**< Tag Buffer Returned On Encryption*/
-	u8 init_vector[AZIHSM_AES_IV_LEN]; /**< Initialization vector */
-	u32 add_data_len; /**< Additional data length */
+	u32 key_id;				/**< key identifier to use for the GCM operation **/
+	u8 tag[AZIHSM_AES_TAG_LEN];		/**< Tag Buffer Returned On Encryption*/
+	u8 init_vector[AZIHSM_AES_IV_LEN];	/**< Initialization vector */
+	u32 actual_aad_data_len;		/**< Actual Additional length|Excluding Padding */
+	u32 aligned_aad_len;			/**< Total Aad length|Including Padding */
+	u8 enable_gcm_workaround;		/**< New version of Application, Aligned AAD*/
+	u8 resvd1[3];				/**< 4 Byte Alignment*/
 };
+
+static_assert(sizeof(struct gcm_params) == 44);
 
 struct xts_params {
 	u16 data_unit_len; /**< Type aes_xts_data_unit >*/
@@ -77,6 +87,8 @@ struct xts_params {
 	u32 key_id2; /**< Key ID 2*/
 	u8 tweak[AZIHSM_AES_TWEAK_LEN]; /**< Tweak */
 };
+
+static_assert(sizeof(struct xts_params) == 28);
 
 struct aes_ioctl_indata {
 	__u64 ctxt;
@@ -92,8 +104,10 @@ struct aes_ioctl_indata {
 		struct gcm_params gcm;
 	} xts_or_gcm;
 
-	u32 rsvd[32];
+	u32 rsvd[30];
 };
+
+static_assert(sizeof(struct aes_ioctl_indata) == 224);
 
 /*
  * struct aes_ioctl_outdata
@@ -114,7 +128,10 @@ struct aes_ioctl_outdata {
 	u8 cmd_spec[AZIHSM_AES_CMD_SPEC_SZ];
 	u32 byte_count;
 	u32 extended_status;
-	u32 rsvd[30];
+	bool fips_approved;
+	u8 rsvd[3];
+	u8 iv_from_fw[AZIHSM_AES_IV_LEN];
+	u32 rsvd1[26];
 };
 
 struct aes_ioctl_inout_data {
@@ -142,5 +159,8 @@ struct aes_ioctl_inout_data {
 int azihsm_aes_dev_ioctl(struct azihsm_hsm_fd_ctxt *ctxt,
 			 struct azihsm_aes *aes, unsigned long arg,
 			 unsigned int ioctl_code);
+
+void dump_aes_in_data(struct aes_ioctl_indata *in);
+void dump_aes_out_data(struct aes_ioctl_outdata *out);
 
 #endif //_LINUX_AZIHSM_AES_DEV_IOCTL_H

@@ -383,12 +383,12 @@ static int azihsm_level_two_abort(struct azihsm_ctrl *ctrl, u32 abort_type)
 				 [AZIHSM_HSM_GLOBAL_ATTRIBUTE_TOTAL_LVL_2_ABORTS]
 			 .counter);
 
-	AZIHSM_DEV_LOG_INFO(
+	AZIHSM_DEV_LOG_ERROR(
 		dev, "Level two abort. Disabling all queues in HSM pool\n");
 	azihsm_disable_all_queues_in_pool(&ctrl->pdev->dev,
 					  &ctrl->hsm.ioq_pool);
 
-	AZIHSM_DEV_LOG_INFO(
+	AZIHSM_DEV_LOG_ERROR(
 		dev, "Level two abort. Disabling all queues in AES pool\n");
 	azihsm_disable_all_queues_in_pool(&ctrl->pdev->dev,
 					  &ctrl->aes.ioq_pool);
@@ -399,15 +399,15 @@ static int azihsm_level_two_abort(struct azihsm_ctrl *ctrl, u32 abort_type)
 	 * will not be completed. Instead they are flushed
 	 */
 
-	AZIHSM_DEV_LOG_INFO(
+	AZIHSM_DEV_LOG_ERROR(
 		dev, "Level two abort. Flushing all commands in HSM pool\n");
 	azihsm_ctrl_flush_cmds_from_ioqs(ctrl, &ctrl->hsm.ioq_pool);
 
-	AZIHSM_DEV_LOG_INFO(
+	AZIHSM_DEV_LOG_ERROR(
 		dev, "Level two abort. Flushing all commands in AES pool\n");
 	azihsm_ctrl_flush_cmds_from_ioqs(ctrl, &ctrl->aes.ioq_pool);
 
-	AZIHSM_DEV_LOG_INFO(dev, "Level two abort. Deiniting the controller\n");
+	AZIHSM_DEV_LOG_ERROR(dev, "Level two abort. Deiniting the controller\n");
 	azihsm_ctrl_deinit(ctrl, true, abort_type);
 
 	/*
@@ -416,7 +416,7 @@ static int azihsm_level_two_abort(struct azihsm_ctrl *ctrl, u32 abort_type)
 	 * not initialized
 	 */
 
-	AZIHSM_DEV_LOG_INFO(dev,
+	AZIHSM_DEV_LOG_ERROR(dev,
 			    "Level two abort. Reinitializing the controller\n");
 	rc = azihsm_ctrl_init(ctrl, &ctrl->saved_cfg, true);
 
@@ -424,7 +424,7 @@ static int azihsm_level_two_abort(struct azihsm_ctrl *ctrl, u32 abort_type)
 		AZIHSM_DEV_LOG_ERROR(
 			dev, "[ERROR] Level two abort failed rc=%d\n", rc);
 	} else {
-		AZIHSM_DEV_LOG_INFO(
+		AZIHSM_DEV_LOG_ERROR(
 			dev,
 			"Level two abort success. Controller is ready for use\n");
 	}
@@ -544,7 +544,7 @@ int azihsm_abort(struct azihsm_ctrl *ctrl, struct azihsm_ioq *ioq,
 		}
 	}
 
-	/*
+	/* 
 	 * Command is not completed and it will never be completed
 	 * by any other thread. We are holding the abort mutex.
 	 * We need to perform abort here.
@@ -559,9 +559,9 @@ int azihsm_abort(struct azihsm_ctrl *ctrl, struct azihsm_ioq *ioq,
 		rc = azihsm_level_one_abort(ctrl, ioq, crash);
 
 	if (rc != AZIHSM_IOQ_LEVEL_ONE_ABORT_SUCCESS || !lvl1_abort) {
-		AZIHSM_DEV_LOG_INFO(
+		AZIHSM_DEV_LOG_ERROR(
 			dev,
-			"[INFO] [%s] [ctrl:%p] [ioq:%p] [crash:%d] [lvl1_abort:%d] level one abort failed/skipped. Moving to level two abort\n",
+			"[%s] [ctrl:%p] [ioq:%p] [crash:%d] [lvl1_abort:%d] level one abort failed/skipped. Moving to level two abort\n",
 			__func__, ctrl, ioq, crash, lvl1_abort);
 
 		/*
@@ -570,9 +570,9 @@ int azihsm_abort(struct azihsm_ctrl *ctrl, struct azihsm_ioq *ioq,
 		 */
 		if ((ctrl->is_pf && (true == azihsm_pf_lvl2_abort_enabled)) ||
 		    !ctrl->is_pf) {
-			AZIHSM_DEV_LOG_INFO(
+			AZIHSM_DEV_LOG_ERROR(
 				dev,
-				"[INFO] [%s] ctrl:%p ioq:%p is_pf[%s] doing level 2 abort\n",
+				"[%s] ctrl:%p ioq:%p is_pf[%s] doing level 2 abort\n",
 				__func__, ctrl, ioq,
 				(ctrl->is_pf ? "YES" : "NO"));
 			rc = azihsm_level_two_abort(ctrl, abort_type);

@@ -780,8 +780,8 @@ void azihsm_ioq_cancel_cmd(struct azihsm_ioq *ioq, u16 tag)
 	// commands
 	spin_lock_bh(&ioq->cmpl_lock);
 
-	AZIHSM_DEV_LOG_INFO(ioq->sq.dev,
-			    "[%s:INFO] Canceling command on ioq:%d tag:%d\n",
+	AZIHSM_DEV_LOG_ERROR(ioq->sq.dev,
+			    "[%s] Canceling command on ioq:%d tag:%d\n",
 			    __func__, ioq->id, tag);
 
 	azihsm_ioq_store_free_ctx(&ioq->store, tag);

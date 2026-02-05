@@ -17,7 +17,7 @@
 #define AZIHSM_CTRL_IDENT_SN_LEN 32
 #define AZIHSM_CTRL_IDENT_MN_LEN 4
 #define AZIHSM_CTRL_IDENT_FR_LEN 32
-#define AZIHSM_CTRL_DEV_DRV_REV_LEN 32
+#define AZIHSM_CTRL_DEV_DRV_REV_LEN 15
 #define AZIHSM_CTRL_DEV_NAME "azihsm-ctrl"
 
 #define AZIHSM_DEVICE_INFO_ENTROPY_DATA_VALID 0x00000001
@@ -135,6 +135,8 @@ union azihsm_ctrl_ident_qes {
 	} fld;
 };
 
+#pragma pack(push)
+#pragma pack(1)
 /**
  * @brief Controller Identity
  *
@@ -165,8 +167,8 @@ struct azihsm_ctrl_ident {
 	u8 ctrl_type;
 	u8 frmw;
 };
-
-static_assert(sizeof(struct azihsm_ctrl_ident) == 104);
+#pragma pack(pop)
+static_assert(sizeof(struct azihsm_ctrl_ident) == 102);
 
 /*
  * AZIHSM_CTRL_STATE
@@ -204,6 +206,8 @@ enum _AZIHSM_ABORT_STATE {
 	 AZIHSM_CONTROLLER_ABORT_IS_IN_PROGRESS)
 #define AZIHSM_CTRL_SET_ABORT_STATE(ctrl, state) \
 	atomic_set(&ctrl->abort_state, state)
+#define AZIHSM_AES_GCM_WA_SUPPORTED(ctrl) \
+	(ctrl->aes_gcm_align_workaround)
 
 struct azihsm_ctrl_cfg {
 	struct pci_dev *pdev;
@@ -278,12 +282,19 @@ struct azihsm_ctrl {
 	char entropy_data[AZIHSM_CTRL_DEV_INFO_ENTROPY_LENGTH];
 
 	/*
-	 * TRUE if ctrl_irq is allocated
-	 * FALSE if ctrl_irq is not allocated or is freed up
-	 * Protects us against double free of control irq
-	 * (IRQ bound to admin queue)
-	 */
+	* TRUE if ctrl_irq is allocated
+	* FALSE if ctrl_irq is not allocated or is freed up
+	* Protects us against double free of control irq
+	* (IRQ bound to admin queue)
+	*/
 	bool ctrl_irq_allocated;
+
+	/*
+	* TRUE if the firmware implements the AES GCM alignment workaround
+	* FALSE if not implemented
+	* The firmware can handle GCM requests that are not nicely aligned
+	*/
+	bool aes_gcm_align_workaround;
 };
 
 int azihsm_ctrl_init(struct azihsm_ctrl *ctrl,

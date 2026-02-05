@@ -5,6 +5,7 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/printk.h>
+#include "azihsm.h"
 
 #define AZIHSM_LOG_LEVEL_ERROR 0x1
 #define AZIHSM_LOG_LEVEL_WARN 0x2
@@ -18,7 +19,7 @@ extern unsigned int log_mask;
 #define AZIHSM_LOG_MSG(level, fmt, ...)                                \
 	do {                                                           \
 		if (log_mask & level)                                  \
-			pr_info("[%s] " fmt, __func__, ##__VA_ARGS__); \
+			pr_info("[%s | %s] " fmt, AZIHSM_DRIVER_VERSION, __func__, ##__VA_ARGS__); \
 	} while (0)
 
 #define AZIHSM_LOG_ERROR(fmt, ...) \
@@ -40,7 +41,7 @@ extern unsigned int log_mask;
 #define AZIHSM_DEV_LOG_MSG(dev, level, func, fmt, ...)                   \
 	do {                                                             \
 		if (log_mask & level)                                    \
-			func(dev, "[%s] " fmt, __func__, ##__VA_ARGS__); \
+			func(dev, "[%s | %s] " fmt, AZIHSM_DRIVER_VERSION, __func__, ##__VA_ARGS__); \
 	} while (0)
 
 #define AZIHSM_DEV_LOG_ERROR(dev, fmt, ...)                      \

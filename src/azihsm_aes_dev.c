@@ -29,10 +29,25 @@ static void azihsm_aes_dev_cmd_set_output_data(
 {
 	void *src_cmd_spec = NULL;
 	void *dst_cmd_spec = NULL;
+	void *src_iv = NULL;
+	void *dst_iv = NULL;
+	u32 aligned_data_len;
+	u8 __user *aligned_buffer_dst;
 
 	out_data->result = aes_cmd->cqe.ph_sts.ph_sts_bits.sts;
+	out_data->extended_status = aes_cmd->cqe.err;
+	out_data->fips_approved = aes_cmd->cqe.fips_approved;
+
+	//
+	// out_data->byte_count is used in different checks in this function 
+	// It need to be filled here. 
+	// If there is an error, then it will be set to 0 and the error code will be in extended_status. 
+	//
 	out_data->byte_count = aes_cmd->cqe.len;
 
+	// We made the src buffer len be aligned, so grab it now before we fix it
+	aligned_data_len =  in_data->UserBuff.src_len-aes_cmd->unaligned_data_size;
+	
 	AZIHSM_DEV_LOG_ENTRY(
 		&aes->pdev->dev,
 		"set_output_data. aes:%p cmd status:%d opc:%d cipher:%d cqe err:%d\n",
@@ -40,16 +55,106 @@ static void azihsm_aes_dev_cmd_set_output_data(
 		aes_cmd->sqe.attr.cmd_opc, aes_cmd->sqe.attr.cipher,
 		aes_cmd->cqe.err);
 
-	out_data->extended_status = aes_cmd->cqe.err;
-
 	if ((aes_cmd->cqe.ph_sts.ph_sts_bits.sts != 0) ||
 	    (aes_cmd->cqe.err != 0)) {
+		out_data->byte_count = 0;
+		out_data->extended_status = aes_cmd->cqe.err;
 		return;
 	}
 
 	//
+	// Additional checks in case FW has problems
+	//
+	
+	// make sure the reported length does not exceed the actual space we were passed
+	if (out_data->byte_count > in_data->UserBuff.dst_len) {
+		AZIHSM_DEV_LOG_ERROR(
+			&aes->pdev->dev,
+			"[%s:ERROR] byte_count (%d) greater than size of dst buffer (%d) \n",
+			__func__, out_data->byte_count, in_data->UserBuff.dst_len);
+		out_data->byte_count = 0;
+		out_data->extended_status = aes_cmd->cqe.ph_sts.ph_sts_bits.sts = AZIHSM_FP_IOCTL_DEVICE_ERROR;
+		return;
+	}
+
+	// If we allocated an unaligned buffer, then we should get the length back
+	if (aes_cmd->aux_buffer_kva && !aes_cmd->cqe.unaligned_dst_data_len) {
+		AZIHSM_DEV_LOG_ERROR(
+			&aes->pdev->dev,
+			"[%s:ERROR] Unaligned buffer allocated, but no length reported\n",
+			__func__);
+		out_data->byte_count = 0;
+		out_data->extended_status = aes_cmd->cqe.ph_sts.ph_sts_bits.sts = AZIHSM_FP_IOCTL_DEVICE_ERROR;
+		return;
+	}
+
+	// If we did NOT allocate an unaligned buffer, then we should NOT get a length back
+	if (!aes_cmd->aux_buffer_kva && aes_cmd->cqe.unaligned_dst_data_len) {
+		AZIHSM_DEV_LOG_ERROR(
+			&aes->pdev->dev,
+			"[%s:ERROR] Unaligned buffer not allocated, but a length is reported\n",
+			__func__);
+		out_data->byte_count = 0;
+		out_data->extended_status = aes_cmd->cqe.ph_sts.ph_sts_bits.sts = AZIHSM_FP_IOCTL_DEVICE_ERROR;
+		return;
+	}
+
+	// If we allocated an unaligned buffer, but the reported size exceeds what we allocated
+	if (aes_cmd->aux_buffer_kva && (aes_cmd->cqe.unaligned_dst_data_len > aes_cmd->unaligned_data_size)) {
+		AZIHSM_DEV_LOG_ERROR(
+			&aes->pdev->dev,
+			"[%s:ERROR] Invalid size reported for unaligned buffer\n",
+			__func__);
+		out_data->byte_count = 0;
+		out_data->extended_status = aes_cmd->cqe.ph_sts.ph_sts_bits.sts = AZIHSM_FP_IOCTL_DEVICE_ERROR;
+		return;
+	}
+
+	// If we allocated an unaligned buffer, but the reported size exceed the MAX
+	if (aes_cmd->aux_buffer_kva && (aes_cmd->cqe.unaligned_dst_data_len > AZIHSM_MAX_UNALIGNED_DATA_SZ)) {
+		AZIHSM_DEV_LOG_ERROR(
+			&aes->pdev->dev,
+			"[%s:ERROR] Invalid size reported for unaligned buffer\n",
+			__func__);
+		out_data->byte_count = 0;
+		out_data->extended_status = aes_cmd->cqe.ph_sts.ph_sts_bits.sts = AZIHSM_FP_IOCTL_DEVICE_ERROR;
+		return;
+	}
+
+	//
+	// Copy additional AES GCM specific results out
+	//
+	if (aes_cmd->sqe.attr.cipher == AZIHSM_AES_CIPHER_GCM) {
+		AZIHSM_DEV_LOG_INFO(
+			&aes->pdev->dev,
+			"set_output_data. Copying additional results\n");
+
+		// aes_cmd->aux_buffer_kva is only allocated if the GCM workaround is enabled
+		if (aes_cmd->aux_buffer_kva) {
+			// We allocated an unaligned buffer, so
+			// now we need to copy the results back
+			// into the original destination buffer
+			aligned_buffer_dst = (u8 *)(in_data->UserBuff.dst_ptr);
+
+			// Copy the unaligned buffer data to the end of the aligned data
+			if (copy_to_user( (void __user *)&aligned_buffer_dst[aligned_data_len], aes_cmd->aux_buffer_kva,
+				aes_cmd->unaligned_data_size)) {
+				AZIHSM_DEV_LOG_ERROR(
+					&aes->pdev->dev,
+					"[%s:ERROR] copy_to_user of unaligned data failed\n",
+					__func__);
+				out_data->byte_count = 0;
+				out_data->extended_status = aes_cmd->cqe.ph_sts.ph_sts_bits.sts = AZIHSM_FP_IOCTL_DEVICE_ERROR;
+				return;
+			}
+
+			out_data->byte_count +=  aes_cmd->unaligned_data_size;
+		}
+	}
+
+	//
 	// For the GCM commands we will have to fill up the
-	// Tag when the encrypt command is completed
+	// Tag and IV when the encrypt command is completed
 	//
 	if ((aes_cmd->sqe.attr.cmd_opc == AZIHSM_AES_OP_ENCRYPT) &&
 	    (aes_cmd->sqe.attr.cipher == AZIHSM_AES_CIPHER_GCM)) {
@@ -66,6 +171,21 @@ static void azihsm_aes_dev_cmd_set_output_data(
 			aes);
 
 		memcpy(dst_cmd_spec, src_cmd_spec, AZIHSM_AES_CMD_SPEC_SZ);
+
+		//
+		// Get the IV from the Cqe and fill it up in the
+		// ioctl output data
+		//
+		src_iv = (void *)aes_cmd->cqe.iv_from_fw;
+		dst_iv = (void *)out_data->iv_from_fw;
+
+		AZIHSM_DEV_LOG_INFO(
+			&aes->pdev->dev,
+			"set_output_data. aes:%p encryption done. Copying IV\n",
+			aes);
+
+		memcpy(dst_iv, src_iv, AZIHSM_AES_IV_LEN);
+
 	}
 }
 
@@ -175,8 +295,10 @@ static void azihsm_aes_dev_sqe_prep(struct azihsm_aes_cmd *aes_cmd,
 
 	else if (in_data->cipher == AZIHSM_AES_CIPHER_GCM) {
 		sqe->cmd_spec.u.gcm.key_id = in_data->xts_or_gcm.gcm.key_id;
-		sqe->cmd_spec.u.gcm.add_data_len =
-			in_data->xts_or_gcm.gcm.add_data_len;
+		sqe->cmd_spec.u.gcm.actual_aad_len =
+			in_data->xts_or_gcm.gcm.actual_aad_data_len;
+		sqe->cmd_spec.u.gcm.aligned_aad_len =
+			in_data->xts_or_gcm.gcm.aligned_aad_len;
 
 		memcpy(sqe->cmd_spec.u.gcm.tag, in_data->xts_or_gcm.gcm.tag,
 		       AZIHSM_AES_TAG_LEN);
@@ -206,16 +328,17 @@ static void azihsm_aes_dev_sqe_prep(struct azihsm_aes_cmd *aes_cmd,
  * decode the value from the ioctl to the correct value
  */
 static int azihsm_aes_dev_validate_ioctl_cipher_xts(
-	struct device *dev, struct aes_ioctl_outdata *out_data,
+	struct azihsm_hsm *hsm, struct aes_ioctl_outdata *out_data,
 	struct xts_params *xts, struct aes_ioctl_user_buffer *buffers)
 {
 	u32 dul = 0;
 
 	if (buffers->dst_len < buffers->src_len) {
 		AZIHSM_DEV_LOG_ERROR(
-			dev,
+			hsm->cdev_dev,
 			"[%s:ERROR] [XTS] Output buffer length:%d is not equal to input buffer length:%d\n",
 			__func__, buffers->dst_len, buffers->src_len);
+		out_data->byte_count = 0;
 		out_data->extended_status =
 			AZIHSM_FP_IOCTL_AES_XTS_IOCTL_VALIDATION_FAILED;
 		return -EINVAL;
@@ -223,8 +346,9 @@ static int azihsm_aes_dev_validate_ioctl_cipher_xts(
 
 	/* validate the data unit length */
 	if (xts->data_unit_len > AZIHSM_AES_DUL_END) {
-		AZIHSM_DEV_LOG_ERROR(dev, "[%s:ERROR] dul : %d is invalid\n",
+		AZIHSM_DEV_LOG_ERROR(hsm->cdev_dev, "[%s:ERROR] dul : %d is invalid\n",
 				     __func__, xts->data_unit_len);
+		out_data->byte_count = 0;
 		out_data->extended_status =
 			AZIHSM_FP_IOCTL_AES_XTS_IOCTL_VALIDATION_FAILED;
 		return -EINVAL;
@@ -250,9 +374,10 @@ static int azihsm_aes_dev_validate_ioctl_cipher_xts(
 
 	if (!dul) {
 		AZIHSM_DEV_LOG_ERROR(
-			dev,
+			hsm->cdev_dev,
 			"[%s:ERROR] input source buffer len[%d] is of zero length. dul:%d\n",
 			__func__, buffers->src_len, dul);
+		out_data->byte_count = 0;
 		out_data->extended_status =
 			AZIHSM_FP_IOCTL_AES_XTS_IOCTL_VALIDATION_FAILED;
 		return -EINVAL;
@@ -260,9 +385,10 @@ static int azihsm_aes_dev_validate_ioctl_cipher_xts(
 
 	if (buffers->src_len % dul) {
 		AZIHSM_DEV_LOG_ERROR(
-			dev,
+			hsm->cdev_dev,
 			"[%s:ERROR] input source buffer len[%d] is not a multiple of dul[%d]\n",
 			__func__, buffers->src_len, dul);
+		out_data->byte_count = 0;
 		out_data->extended_status =
 			AZIHSM_FP_IOCTL_AES_XTS_IOCTL_VALIDATION_FAILED;
 		return -EINVAL;
@@ -281,25 +407,55 @@ static int azihsm_aes_dev_validate_ioctl_cipher_xts(
  * output buffer (after aad is taken into consideration)
  */
 static int azihsm_aes_dev_validate_ioctl_cipher_gcm(
-	struct device *dev, struct aes_ioctl_outdata *out_data,
+	struct azihsm_hsm *hsm, struct aes_ioctl_outdata *out_data,
 	struct gcm_params *gcm, struct aes_ioctl_user_buffer *buffers)
 {
-	if (gcm->add_data_len >= buffers->src_len) {
+	if (gcm->actual_aad_data_len >= buffers->src_len) {
 		AZIHSM_DEV_LOG_ERROR(
-			dev,
+			hsm->cdev_dev,
 			"[%s:ERROR] [GCM] AAD data length:%d is invalid. User source buffer length:%d\n",
-			__func__, gcm->add_data_len, buffers->src_len);
+			__func__, gcm->actual_aad_data_len, buffers->src_len);
+		out_data->byte_count = 0;
 		out_data->extended_status =
 			AZIHSM_FP_IOCTL_AES_GCM_IOCTL_VALIDATION_FAILED;
 		return -EINVAL;
 	}
 
-	if (buffers->dst_len < buffers->src_len - gcm->add_data_len) {
+	if (AZIHSM_AES_GCM_WA_SUPPORTED(hsm->ctrl) && gcm->enable_gcm_workaround) {
+		//
+		// Application supports the GCM Alignment workaround
+		// Check the params accordingly
+		//
+		if (gcm->aligned_aad_len < gcm->actual_aad_data_len) {
+			AZIHSM_DEV_LOG_ERROR(
+				hsm->cdev_dev,
+				"[%s:ERROR] [GCM] aligned aad length:%d is less than actual aad len %d\n",
+				__func__, gcm->aligned_aad_len, gcm->actual_aad_data_len);
+			out_data->byte_count = 0;
+			out_data->extended_status =
+				AZIHSM_FP_IOCTL_AES_GCM_IOCTL_VALIDATION_FAILED;
+			return -EINVAL;
+		}
+		if (!AZIHSM_IS_AAD_ALIGNED(gcm->aligned_aad_len, AZIHSM_AES_GCM_AAD_SZ_ALIGNMENT_BYTES)) {
+			AZIHSM_DEV_LOG_ERROR(
+				hsm->cdev_dev,
+				"[%s:ERROR] [GCM] aligned_aad_len (%d) is Not Aligned %d\n",
+				__func__,
+				gcm->aligned_aad_len, AZIHSM_AES_GCM_AAD_SZ_ALIGNMENT_BYTES);
+			out_data->byte_count = 0;
+			out_data->extended_status =
+				AZIHSM_FP_IOCTL_AES_GCM_IOCTL_VALIDATION_FAILED;
+			return -EINVAL;
+		}
+	}
+
+	if (buffers->dst_len < buffers->src_len - gcm->actual_aad_data_len) {
 		AZIHSM_DEV_LOG_ERROR(
-			dev,
+			hsm->cdev_dev,
 			"[%s:ERROR] [GCM] dest length:%d is less than required size. src:%d aad:%d\n",
 			__func__, buffers->dst_len, buffers->src_len,
-			gcm->add_data_len);
+			gcm->actual_aad_data_len);
+		out_data->byte_count = 0;
 		out_data->extended_status =
 			AZIHSM_FP_IOCTL_AES_GCM_IOCTL_VALIDATION_FAILED;
 		return -EINVAL;
@@ -388,6 +544,7 @@ static int azihsm_aes_dev_validate_ioctl(
 			ctxt->hsm->cdev_dev,
 			"AES ioctl: An abort is currently in progress.\n");
 
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			GENERATE_STATUS_CODE(AZIHSM_STS_SRC_ABORT,
 					     AZIHSM_ABORT_IN_PROGRESS);
@@ -403,6 +560,7 @@ static int azihsm_aes_dev_validate_ioctl(
 			AZIHSM_CTRL_GET_STATE(ctxt->hsm->ctrl),
 			AZIHSM_CTRL_GET_ABORT_STATE(ctxt->hsm->ctrl));
 
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_DEVICE_ERROR;
 
@@ -461,6 +619,7 @@ static int azihsm_aes_dev_validate_ioctl(
 	 *  fast path operations are allowed
 	 */
 	else if (false == ctxt->sessions[0].short_app_id_is_valid) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_NO_VALID_SHORT_APP_ID;
 		AZIHSM_DEV_LOG_ERROR(
@@ -474,6 +633,7 @@ static int azihsm_aes_dev_validate_ioctl(
 	 */
 	else if ((true == ctxt->sessions[0].valid) &&
 		 (session_id_in_file_ctxt != session_id_in_ioctl_buffer)) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_SESSION_ID_DOES_NOT_MATCH;
 		AZIHSM_DEV_LOG_ERROR(
@@ -486,6 +646,7 @@ static int azihsm_aes_dev_validate_ioctl(
 
 	else if ((true == ctxt->sessions[0].short_app_id_is_valid) &&
 		 (short_app_id_in_file_ctxt != short_app_id_in_ioctl_buffer)) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_SHORTAPP_ID_DOES_NOT_MATCH;
 		AZIHSM_DEV_LOG_ERROR(
@@ -498,6 +659,7 @@ static int azihsm_aes_dev_validate_ioctl(
 
 	else if (AZIHSM_AES_OP_CODE_VALID(aes_ioctl_buffer->in_data.op_code) ==
 		 false) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_INVALID_OPCODE;
 		AZIHSM_DEV_LOG_ERROR(
@@ -509,6 +671,7 @@ static int azihsm_aes_dev_validate_ioctl(
 
 	else if (AZIHSM_AES_CIPHER_VALID(aes_ioctl_buffer->in_data.cipher) ==
 		 false) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_INVALID_CIPHER_TYPE;
 		AZIHSM_DEV_LOG_ERROR(
@@ -520,6 +683,7 @@ static int azihsm_aes_dev_validate_ioctl(
 
 	else if ((ioctl_value == AZIHSM_AES_DEV_IOCTL_CMD_XTS) &&
 		 (aes_ioctl_buffer->in_data.cipher != AZIHSM_AES_CIPHER_XTS)) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_INVALID_CIPHER_TYPE;
 		AZIHSM_DEV_LOG_ERROR(
@@ -532,6 +696,7 @@ static int azihsm_aes_dev_validate_ioctl(
 
 	else if ((ioctl_value == AZIHSM_AES_DEV_IOCTL_CMD_GCM) &&
 		 (aes_ioctl_buffer->in_data.cipher != AZIHSM_AES_CIPHER_GCM)) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_INVALID_CIPHER_TYPE;
 		AZIHSM_DEV_LOG_ERROR(
@@ -550,12 +715,12 @@ static int azihsm_aes_dev_validate_ioctl(
 	 */
 	if (aes_ioctl_buffer->in_data.cipher == AZIHSM_AES_CIPHER_XTS) {
 		rc = azihsm_aes_dev_validate_ioctl_cipher_xts(
-			ctxt->hsm->cdev_dev, &aes_ioctl_buffer->out_data,
+			ctxt->hsm, &aes_ioctl_buffer->out_data,
 			&aes_ioctl_buffer->in_data.xts_or_gcm.xts,
 			&aes_ioctl_buffer->in_data.UserBuff);
 	} else if (aes_ioctl_buffer->in_data.cipher == AZIHSM_AES_CIPHER_GCM) {
 		rc = azihsm_aes_dev_validate_ioctl_cipher_gcm(
-			ctxt->hsm->cdev_dev, &aes_ioctl_buffer->out_data,
+			ctxt->hsm, &aes_ioctl_buffer->out_data,
 			&aes_ioctl_buffer->in_data.xts_or_gcm.gcm,
 			&aes_ioctl_buffer->in_data.UserBuff);
 	}
@@ -566,6 +731,7 @@ static int azihsm_aes_dev_validate_ioctl(
 	/* frame type must always be AES irrespective of whether it is XTS or GCM */
 	if (AZIHSM_AES_FRAME_TYPE_VALID(aes_ioctl_buffer->in_data.frame_type) ==
 	    false) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_INVALID_FRAME_TYPE;
 		AZIHSM_DEV_LOG_ERROR(
@@ -575,6 +741,7 @@ static int azihsm_aes_dev_validate_ioctl(
 		rc = -EINVAL;
 	} else if (!aes_ioctl_buffer->in_data.UserBuff.src_ptr ||
 		   !aes_ioctl_buffer->in_data.UserBuff.src_len) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_INVALID_INPUT_BUFFER;
 		AZIHSM_DEV_LOG_ERROR(
@@ -584,6 +751,7 @@ static int azihsm_aes_dev_validate_ioctl(
 		rc = -EINVAL;
 	} else if (!aes_ioctl_buffer->in_data.UserBuff.dst_ptr ||
 		   !aes_ioctl_buffer->in_data.UserBuff.dst_len) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_INVALID_OUTPUT_BUFFER;
 		AZIHSM_DEV_LOG_ERROR(
@@ -595,6 +763,7 @@ static int azihsm_aes_dev_validate_ioctl(
 
 	if (!access_ok(aes_ioctl_buffer->in_data.UserBuff.src_ptr,
 		       aes_ioctl_buffer->in_data.UserBuff.src_len)) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_INVALID_INPUT_BUFFER;
 		AZIHSM_DEV_LOG_ERROR(
@@ -608,6 +777,7 @@ static int azihsm_aes_dev_validate_ioctl(
 
 	if (!access_ok(aes_ioctl_buffer->in_data.UserBuff.dst_ptr,
 		       aes_ioctl_buffer->in_data.UserBuff.dst_len)) {
+		aes_ioctl_buffer->out_data.byte_count = 0;
 		aes_ioctl_buffer->out_data.extended_status =
 			AZIHSM_FP_IOCTL_INVALID_OUTPUT_BUFFER;
 		AZIHSM_DEV_LOG_ERROR(
@@ -695,84 +865,162 @@ azihsm_aes_dev_enc_dec_ioctl(struct azihsm_aes *aes,
 	struct aes_ioctl_indata *in_data = NULL;
 	struct aes_ioctl_outdata *out_data = NULL;
 	struct azihsm_aes_cmd aes_cmd = { 0 };
+	u8 __user *unaligned_buffer_src, *unaligned_buffer_dst;
 
 	aes_cmd.completion_status = AZIHSM_IOQ_CMD_STS_UNDEFINED;
 
 	in_data = &aes_ioctl_buf->in_data;
 	out_data = &aes_ioctl_buf->out_data;
 
-	//
-	// Create the SGL for the soruce buffer
-	//
-	rc = azihsm_dma_io_init(aes->pdev, in_data->UserBuff.src_ptr,
-				in_data->UserBuff.src_len, DMA_TO_DEVICE,
-				&aes_cmd.dma_io_src);
+	dump_aes_in_data(in_data);
 
-	if (rc) {
-		//
-		// For this failure the cleanup is called internally
-		// by the function.
-		//
-		AZIHSM_DEV_LOG_ERROR(
-			&aes->pdev->dev,
-			"%s:Failed To Create SGL For Src Buff[%d]\n", __func__,
-			rc);
+	// Check to see if the DDI and the FW both support the GCM alignent workaround
+	if ( aes->ctrl->aes_gcm_align_workaround &&
+			aes_ioctl_buf->in_data.cipher == AZIHSM_AES_CIPHER_GCM &&
+			aes_ioctl_buf->in_data.xts_or_gcm.gcm.enable_gcm_workaround) {
+		aes_cmd.unaligned_data_size = aes_ioctl_buf->in_data.UserBuff.src_len % AZIHSM_AES_GCM_DATA_SZ_ALIGNMENT_BYTES;
 
-		out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
-		return -EIO;
+		if (aes_cmd.unaligned_data_size) {
+			/* We need to make some adjustments for the AES GCM Alignment workaround */
+			AZIHSM_DEV_LOG_DEBUG(
+				&aes->pdev->dev,
+				"Unaliged Length %d", aes_cmd.unaligned_data_size);
+			// Because this is only allocated if all of the above conditions are met, it can serve as a flag later on
+			aes_cmd.aux_buffer_kva = dma_alloc_coherent(&aes->pdev->dev, aes_cmd.unaligned_data_size,
+							&aes_cmd.hw_addr, GFP_KERNEL);
+			if (!aes_cmd.aux_buffer_kva) {
+				AZIHSM_DEV_LOG_DEBUG(
+					&aes->pdev->dev,
+					"Failed to DMA alloc unaligned data buffer");
+					out_data->byte_count = 0;
+					out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
+				return -EIO;
+			}
+
+		}
+
+		// Now, we need to adjust the buffer lengths before we allocate the SGLs
+		in_data->UserBuff.src_len -= aes_cmd.unaligned_data_size;
+		in_data->UserBuff.dst_len -= aes_cmd.unaligned_data_size;
+		unaligned_buffer_src = (u8 *)(in_data->UserBuff.src_ptr);
+		unaligned_buffer_dst = (u8 *)(in_data->UserBuff.dst_ptr);
 	}
 
-	//
-	// Create the NVME SGL for the soruce buffer
-	//
-	rc = azihsm_dma_io_xlat(&aes_cmd.dma_io_src);
-	if (rc) {
-		AZIHSM_DEV_LOG_ERROR(
+	// This should not happen, but just be paranoid for now
+	if(aes_cmd.aux_buffer_kva && !aes_cmd.unaligned_data_size) {
+		AZIHSM_DEV_LOG_DEBUG(
 			&aes->pdev->dev,
-			"%s: Failed to Create the NVME Sgl For Src[%d]\n",
-			__func__, rc);
-
-		azihsm_dma_io_cleanup(&aes_cmd.dma_io_src);
-		out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
-		return -EIO;
+			"BAD: kva %d 0x%p",
+			aes_cmd.unaligned_data_size,
+			aes_cmd.aux_buffer_kva);
 	}
 
-	//
-	// Create the SGL for the destination buffer
-	//
-	rc = azihsm_dma_io_init(aes->pdev, in_data->UserBuff.dst_ptr,
-				in_data->UserBuff.dst_len, DMA_FROM_DEVICE,
-				&aes_cmd.dma_io_dst);
 
-	if (rc) {
-		AZIHSM_DEV_LOG_ERROR(
-			&aes->pdev->dev,
-			"%s: Failed To Create SGL For Dst Buff[%d]\n", __func__,
-			rc);
+	//
+	// Create the SGL for the source buffer
+	//
+	if( in_data->UserBuff.src_len != 0 && in_data->UserBuff.dst_len != 0 ) {
+		rc = azihsm_dma_io_init(aes->pdev, in_data->UserBuff.src_ptr,
+					in_data->UserBuff.src_len, DMA_TO_DEVICE,
+					&aes_cmd.dma_io_src);
+
+		if (rc) {
+			//
+			// For this failure the cleanup is called internally
+			// by the function.
+			//
+			AZIHSM_DEV_LOG_ERROR(
+				&aes->pdev->dev,
+				"%s:Failed To Create SGL For Src Buff[%d]\n", __func__,
+				rc);
+
+			// Cleanup aux buffer if allocated
+			if (aes_cmd.aux_buffer_kva) {
+				dma_free_coherent(&aes->pdev->dev, aes_cmd.unaligned_data_size,
+						aes_cmd.aux_buffer_kva, aes_cmd.hw_addr);
+				aes_cmd.aux_buffer_kva = NULL;
+			}
+			out_data->byte_count = 0;
+			out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
+			return -EIO;
+		}
 
 		//
-		// Cleanup for the dst dma io is done internally
-		// by the function.
+		// Create the NVME SGL for the source buffer
 		//
-		azihsm_dma_io_cleanup(&aes_cmd.dma_io_src);
-		out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
-		return rc;
-	}
+		rc = azihsm_dma_io_xlat(&aes_cmd.dma_io_src);
+		if (rc) {
+			AZIHSM_DEV_LOG_ERROR(
+				&aes->pdev->dev,
+				"%s: Failed to Create the NVME Sgl For Src[%d]\n",
+				__func__, rc);
 
-	//
-	// Create the NVME SGL for the destination buffer
-	//
-	rc = azihsm_dma_io_xlat(&aes_cmd.dma_io_dst);
-	if (rc) {
-		AZIHSM_DEV_LOG_ERROR(
-			&aes->pdev->dev,
-			"%s: Failed to Create the NVME Sgl For Dst[%d]\n",
-			__func__, rc);
+			azihsm_dma_io_cleanup(&aes_cmd.dma_io_src);
+			// Cleanup aux buffer if allocated
+			if (aes_cmd.aux_buffer_kva) {
+				dma_free_coherent(&aes->pdev->dev, aes_cmd.unaligned_data_size,
+						aes_cmd.aux_buffer_kva, aes_cmd.hw_addr);
+				aes_cmd.aux_buffer_kva = NULL;
+			}
+			out_data->byte_count = 0;
+			out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
+			return -EIO;
+		}
 
-		azihsm_dma_io_cleanup(&aes_cmd.dma_io_src);
-		azihsm_dma_io_cleanup(&aes_cmd.dma_io_dst);
-		out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
-		return rc;
+		//
+		// Create the SGL for the destination buffer
+		//
+		rc = azihsm_dma_io_init(aes->pdev, in_data->UserBuff.dst_ptr,
+					in_data->UserBuff.dst_len, DMA_FROM_DEVICE,
+					&aes_cmd.dma_io_dst);
+
+		if (rc) {
+			AZIHSM_DEV_LOG_ERROR(
+				&aes->pdev->dev,
+				"%s: Failed To Create SGL For Dst Buff[%d]\n", __func__,
+				rc);
+
+			//
+			// Cleanup for the dst dma io is done internally
+			// by the function.
+			//
+			azihsm_dma_io_cleanup(&aes_cmd.dma_io_src);
+			// Cleanup aux buffer if allocated
+			if (aes_cmd.aux_buffer_kva) {
+				dma_free_coherent(&aes->pdev->dev, aes_cmd.unaligned_data_size,
+						aes_cmd.aux_buffer_kva, aes_cmd.hw_addr);
+				aes_cmd.aux_buffer_kva = NULL;
+			}
+			out_data->byte_count = 0;
+			out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
+			return rc;
+		}
+
+		//
+		// Create the NVME SGL for the destination buffer
+		//
+		rc = azihsm_dma_io_xlat(&aes_cmd.dma_io_dst);
+		if (rc) {
+			AZIHSM_DEV_LOG_ERROR(
+				&aes->pdev->dev,
+				"%s: Failed to Create the NVME Sgl For Dst[%d]\n",
+				__func__, rc);
+
+			azihsm_dma_io_cleanup(&aes_cmd.dma_io_src);
+			azihsm_dma_io_cleanup(&aes_cmd.dma_io_dst);
+			// Cleanup aux buffer if allocated
+			if (aes_cmd.aux_buffer_kva) {
+				dma_free_coherent(&aes->pdev->dev, aes_cmd.unaligned_data_size,
+						aes_cmd.aux_buffer_kva, aes_cmd.hw_addr);
+				aes_cmd.aux_buffer_kva = NULL;
+			}
+			out_data->byte_count = 0;
+			out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
+			return rc;
+		}
+	} else {
+		in_data->UserBuff.src_ptr = NULL;
+		in_data->UserBuff.dst_ptr = NULL;
 	}
 
 	//
@@ -783,12 +1031,80 @@ azihsm_aes_dev_enc_dec_ioctl(struct azihsm_aes *aes,
 	azihsm_aes_dev_sqe_prep(&aes_cmd, in_data);
 
 	//
+	// The SQE gets zero'd out in the prep call above, so we have to wait
+	// until after this to do the GCM Alignment workaround adjustments
+	//
+
+	// aes_cmd.aux_buffer_kva is only allocated if the GCM workaround is enabled
+	if(aes_cmd.aux_buffer_kva) {
+		// We allocated the unaligned buffer above, so now we
+		// update the SQE to use it
+
+		AZIHSM_DEV_LOG_DEBUG(
+			&aes->pdev->dev,
+			"Unaligned DMA: auxkva 0x%p hw_addr 0x%016llx",
+			aes_cmd.aux_buffer_kva,
+			aes_cmd.hw_addr);
+
+		aes_cmd.sqe.cmd_spec.u.gcm.unaligned_src_data_len = aes_cmd.unaligned_data_size;
+		aes_cmd.sqe.cmd_spec.u.gcm.unaligned_dst_data_len = aes_cmd.unaligned_data_size;
+		aes_cmd.sqe.cmd_spec.u.gcm.unaligned_src_data_addr_low  = (u32)((u64)aes_cmd.hw_addr    &0xffffffff);
+		aes_cmd.sqe.cmd_spec.u.gcm.unaligned_src_data_addr_high = (u32)((u64)(aes_cmd.hw_addr>>32)&0xffffffff);
+		aes_cmd.sqe.cmd_spec.u.gcm.unaligned_dst_data_addr_low  = (u32)((u64)aes_cmd.hw_addr    &0xffffffff);
+		aes_cmd.sqe.cmd_spec.u.gcm.unaligned_dst_data_addr_high = (u32)((u64)(aes_cmd.hw_addr>>32)&0xffffffff);
+
+		AZIHSM_DEV_LOG_DEBUG(
+			&aes->pdev->dev,
+			"unaligned buffer: %d @ 0x%x%08x",
+			aes_cmd.sqe.cmd_spec.u.gcm.unaligned_src_data_len,
+			aes_cmd.sqe.cmd_spec.u.gcm.unaligned_src_data_addr_high,
+			aes_cmd.sqe.cmd_spec.u.gcm.unaligned_src_data_addr_low);
+		
+		// Copy the unaligned data at the end of the UserBuffer
+		// into the DMA buffer we allocated above. This looks like we are
+		// accessing data past the end of teh buffer, but the data was passed
+		// in by the user as part of the original src_len.
+		if (copy_from_user(aes_cmd.aux_buffer_kva, (void __user *)&unaligned_buffer_src[in_data->UserBuff.src_len],
+			aes_cmd.unaligned_data_size)) {
+			AZIHSM_DEV_LOG_ERROR(
+				&aes->pdev->dev,
+				"[%s:ERROR] copy_from_user of unaligned data failed\n",
+				__func__);
+			// Free up the DMA buffers
+			azihsm_dma_io_cleanup(&aes_cmd.dma_io_src);
+			azihsm_dma_io_cleanup(&aes_cmd.dma_io_dst);
+
+			dma_free_coherent(&aes->pdev->dev, aes_cmd.unaligned_data_size,
+					aes_cmd.aux_buffer_kva, aes_cmd.hw_addr);
+
+			out_data->byte_count = 0;
+			out_data->extended_status = AZIHSM_FP_IOCTL_NO_MEMORY;
+			aes_cmd.aux_buffer_kva = NULL;
+			aes_cmd.unaligned_data_size = 0;
+			return -EINVAL;
+		}
+
+	}
+
+	dump_aes_cmd_sqe(&aes_cmd);
+
+	dump_aes_in_data(in_data);
+
+	//
 	// fire the command and get the response
 	//
 	rc = azihsm_aes_cmd_process(aes, &aes_cmd);
 	if (rc) {
 		azihsm_dma_io_cleanup(&aes_cmd.dma_io_src);
 		azihsm_dma_io_cleanup(&aes_cmd.dma_io_dst);
+
+		// aes_cmd.aux_buffer_kva is only allocated if the GCM workaround is enabled
+		if (aes_cmd.aux_buffer_kva) {
+			dma_free_coherent(&aes->pdev->dev, aes_cmd.unaligned_data_size,
+					aes_cmd.aux_buffer_kva, aes_cmd.hw_addr);
+			aes_cmd.aux_buffer_kva = NULL;
+			aes_cmd.unaligned_data_size = 0;
+		}
 
 		azihsm_aes_fill_error_sts(aes, out_data,
 					  aes_cmd.completion_status);
@@ -798,7 +1114,17 @@ azihsm_aes_dev_enc_dec_ioctl(struct azihsm_aes *aes,
 			"%s: azihsm_aes_cmd_process Failed [rc:%d] [extended_sts:0x%x]\n",
 			__func__, rc, out_data->extended_status);
 
+		out_data->byte_count = 0;
+		out_data->extended_status = aes_cmd.completion_status;
+
 		return rc;
+	}
+
+	if (aes_cmd.aux_buffer_kva) {
+		in_data->UserBuff.src_ptr = unaligned_buffer_src;
+		in_data->UserBuff.src_len += aes_cmd.unaligned_data_size;
+		in_data->UserBuff.dst_ptr = unaligned_buffer_dst;
+		in_data->UserBuff.dst_len += aes_cmd.unaligned_data_size;
 	}
 
 	//
@@ -807,8 +1133,20 @@ azihsm_aes_dev_enc_dec_ioctl(struct azihsm_aes *aes,
 	//
 	azihsm_aes_dev_cmd_set_output_data(aes, &aes_cmd, in_data, out_data);
 
+	dump_aes_cmd_cqe(&aes_cmd);
+
+	dump_aes_out_data(out_data);
+
 	azihsm_dma_io_cleanup(&aes_cmd.dma_io_src);
 	azihsm_dma_io_cleanup(&aes_cmd.dma_io_dst);
+
+	// aes_cmd.aux_buffer_kva is only allocated if the GCM workaround is enabled
+	if (aes_cmd.aux_buffer_kva) {
+		dma_free_coherent(&aes->pdev->dev, aes_cmd.unaligned_data_size,
+				aes_cmd.aux_buffer_kva, aes_cmd.hw_addr);
+		aes_cmd.aux_buffer_kva = NULL;
+		aes_cmd.unaligned_data_size = 0;
+	}
 	return rc;
 }
 
@@ -864,3 +1202,206 @@ int azihsm_aes_dev_ioctl(struct azihsm_hsm_fd_ctxt *ctxt,
 				     "[%s:] copy To user failed", __func__);
 	return err;
 }
+
+
+/*
+ * Debug routines
+ */
+void
+dump_aes_in_data(struct aes_ioctl_indata *in_data)
+{
+	u8 *iv,*tag;
+	AZIHSM_LOG_INFO("AES INDATA: %p\n"
+			"op_code: %d\n"
+			"cipher: %d\n"
+			"UserBuff: src: %d 0x%p\n"
+			"UserBuff: dst: %d 0x%p\n"
+			"frame_type: %d\n"
+			,
+			in_data,
+			in_data->op_code,
+			in_data->cipher,
+			in_data->UserBuff.src_len,
+			in_data->UserBuff.src_ptr,
+			in_data->UserBuff.dst_len,
+			in_data->UserBuff.dst_ptr,
+			in_data->frame_type
+			);
+
+	if ( in_data->cipher == AZIHSM_AES_CIPHER_GCM ) {
+		iv = in_data->xts_or_gcm.gcm.init_vector;
+		tag = in_data->xts_or_gcm.gcm.tag;
+		AZIHSM_LOG_INFO("INDATA GCM Params:\n"
+				"  key_id: %d\n"
+				"  tag: %02x%02x%02x%02x%02x%02x%02x%02x"
+				               "%02x%02x%02x%02x%02x%02x%02x%02x\n"
+				"  init_vector: %02x%02x%02x%02x%02x%02x%02x%02x"
+				               "%02x%02x%02x%02x%02x\n"
+				"  actual_aad_len: %d\n"
+				"  aligned_aad_len: %d\n"
+				"  enable_gcm_workaround: %d\n"
+				,
+				in_data->xts_or_gcm.gcm.key_id,
+				tag[0], tag[1], tag[2], tag[3], tag[4], tag[5], tag[6], tag[7],
+				tag[8], tag[9], tag[10], tag[11], tag[12], tag[13], tag[14], tag[15],
+				iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], iv[6], iv[7],
+				iv[8], iv[9], iv[10], iv[11], iv[12],
+				in_data->xts_or_gcm.gcm.actual_aad_data_len,
+				in_data->xts_or_gcm.gcm.aligned_aad_len,
+				in_data->xts_or_gcm.gcm.enable_gcm_workaround
+				);
+	} else if ( in_data->cipher == AZIHSM_AES_CIPHER_XTS ) {
+		AZIHSM_LOG_INFO("INDATA XTS Params:\n"
+				"  data_unit_len: %d\n"
+				"  key_id1: %x\n"
+				"  key_id2: %x\n"
+				,
+				in_data->xts_or_gcm.xts.data_unit_len,
+				in_data->xts_or_gcm.xts.key_id1,
+				in_data->xts_or_gcm.xts.key_id2
+				);
+	} else {
+		AZIHSM_LOG_INFO("Unknown cpiher!?!?!?!");
+	}
+}
+
+void
+dump_aes_out_data(struct aes_ioctl_outdata *out_data)
+{
+	u8 *cmd_spec,*iv;
+
+	cmd_spec=out_data->cmd_spec;
+	iv=out_data->iv_from_fw;
+	AZIHSM_LOG_INFO("AES OUTDATA: 0x%p\n"
+			"result: %d\n"
+			"cmd_spec: %02x%02x%02x%02x%02x%02x%02x%02x"
+			          "%02x%02x%02x%02x%02x%02x%02x%02x\n"
+			"byte_count: %d\n"
+			"extended_status: %d\n"
+			"fips_approved: %d\n"
+			"iv_from_fw: %02x%02x%02x%02x%02x%02x%02x%02x"
+			            "%02x%02x%02x%02x\n"
+			,
+			out_data,
+			out_data->result,
+			cmd_spec[0], cmd_spec[1], cmd_spec[2], cmd_spec[3],
+			cmd_spec[4], cmd_spec[5], cmd_spec[6], cmd_spec[7],
+			cmd_spec[8], cmd_spec[9], cmd_spec[10], cmd_spec[11],
+			cmd_spec[12], cmd_spec[13], cmd_spec[14], cmd_spec[15],
+			out_data->byte_count,
+			out_data->extended_status,
+			out_data->fips_approved,
+			iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], iv[6], iv[7],
+			iv[8], iv[9], iv[10], iv[11]
+			);
+}
+
+void
+dump_aes_cmd_sqe(struct azihsm_aes_cmd *cmd)
+{
+	u8 *iv,*tag;
+	/* sqe */
+	AZIHSM_LOG_INFO("AES SQE: 0x%p\n"
+			"attr: opc=%u psdt=%u cmd_type=%u cipher=%u dul=%u\n"
+			"cmd_id %u\n"
+			"session_id %u\n"
+			"short_app_id %u\n"
+			"sgl src_data: %u @ 0x%llx\n"
+			"sgl dst_data: %u @ 0x%llx\n"
+			"frame_type %u\n"
+			,
+			&cmd->sqe,
+			cmd->sqe.attr.cmd_opc,
+			cmd->sqe.attr.psdt,
+			cmd->sqe.attr.cmd_type,
+			cmd->sqe.attr.cipher,
+			cmd->sqe.attr.dul,
+			cmd->sqe.cmd_id,
+			cmd->sqe.session_id,
+			cmd->sqe.short_app_id,
+			cmd->sqe.src_data.len,
+			cmd->sqe.src_data.dptr.sgl.sgl_desc.addr,
+			cmd->sqe.dst_data.len,
+			cmd->sqe.dst_data.dptr.sgl.sgl_desc.addr,
+			cmd->sqe.frame_type
+		     );
+	if( cmd->sqe.attr.cipher == AZIHSM_AES_CIPHER_GCM ) {
+		iv = cmd->sqe.cmd_spec.u.gcm.iv,
+		tag = cmd->sqe.cmd_spec.u.gcm.tag;
+		AZIHSM_LOG_INFO("SQE GCM:\n"
+			"key_id: %d\n"
+			"actual_aad_len: %d\n"
+			"  tag: %02x%02x%02x%02x%02x%02x%02x%02x"
+			               "%02x%02x%02x%02x%02x%02x%02x%02x\n"
+			"  init_vector: %02x%02x%02x%02x%02x%02x%02x%02x"
+			               "%02x%02x%02x%02x%02x\n"
+			"aligned_aad_len: %d\n"
+			"unaligned_src_data_len: %d\n"
+			"unaligned_dst_data_len: %d\n"
+			"unaligned_src_data_addr: 0x%016x%016x\n"
+			"unaligned_dst_data_addr: 0x%016x%016x\n"
+			,
+			cmd->sqe.cmd_spec.u.gcm.key_id,
+			cmd->sqe.cmd_spec.u.gcm.actual_aad_len,
+			tag[0], tag[1], tag[2], tag[3], tag[4], tag[5], tag[6], tag[7],
+			tag[8], tag[9], tag[10], tag[11], tag[12], tag[13], tag[14], tag[15],
+			iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], iv[6], iv[7],
+			iv[8], iv[9], iv[10], iv[11], iv[12],
+			cmd->sqe.cmd_spec.u.gcm.aligned_aad_len,
+			cmd->sqe.cmd_spec.u.gcm.unaligned_src_data_len,
+			cmd->sqe.cmd_spec.u.gcm.unaligned_dst_data_len,
+			cmd->sqe.cmd_spec.u.gcm.unaligned_src_data_addr_high,
+			cmd->sqe.cmd_spec.u.gcm.unaligned_src_data_addr_low,
+			cmd->sqe.cmd_spec.u.gcm.unaligned_dst_data_addr_high,
+			cmd->sqe.cmd_spec.u.gcm.unaligned_dst_data_addr_low
+			);
+	}
+	/* cqe */
+	/* dma_io_src */
+	/* dma_io_src */
+	/* io_data */
+}
+
+
+void
+dump_aes_cmd_cqe(struct azihsm_aes_cmd *cmd)
+{
+	u8 *iv;
+	/* sqe */
+	/* cqe */
+	iv = cmd->cqe.iv_from_fw;
+	AZIHSM_LOG_INFO("AES CQE:\n"
+			"attr: opc=%u psdt=%u cmd_type=%u cipher=%u dul=%u\n"
+			"cmd_id %u\n"
+			"iv_from_fw: %02x%02x%02x%02x%02x%02x%02x%02x"
+			               "%02x%02x%02x%02x%02x\n"
+			"unaligned_dst_data_len %u\n"
+			"fips_approved: %u\n"
+			"len: %u\n"
+			"sq_head: %u\n"
+			"sq_id: %u\n"
+			"err: %u\n"
+			"phase: %u %u\n"
+			,
+			cmd->cqe.attr.cmd_opc,
+			cmd->cqe.attr.psdt,
+			cmd->cqe.attr.cmd_type,
+			cmd->cqe.attr.cipher,
+			cmd->cqe.attr.dul,
+			cmd->cqe.cmd_id,
+			iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], iv[6], iv[7],
+			iv[8], iv[9], iv[10], iv[11], iv[12],
+			cmd->cqe.unaligned_dst_data_len,
+			cmd->cqe.fips_approved,
+			cmd->cqe.len,
+			cmd->cqe.sq_head,
+			cmd->cqe.sq_id,
+			cmd->cqe.err,
+			cmd->cqe.ph_sts.ph_sts_bits.phase,
+			cmd->cqe.ph_sts.ph_sts_bits.sts
+		     );
+	/* dma_io_src */
+	/* dma_io_src */
+	/* io_data */
+}
+

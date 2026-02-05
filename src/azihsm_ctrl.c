@@ -191,14 +191,14 @@ static int azihsm_ctrl_hw_wait_ready(struct azihsm_ctrl *ctrl, bool enable)
 	for (;;) {
 		csts.val = readl(&ctrl->reg->csts);
 		if (csts.val == ~0) {
-			AZIHSM_DEV_LOG_ERROR(dev, "device has gone\n");
+			AZIHSM_DEV_LOG_ERROR(dev, "device has gone [CSTS:0x%x]\n", csts.val);
 			err = -ENODEV;
 			goto err;
 		}
 
 		if (csts.fld.rdy == ready) {
-			AZIHSM_DEV_LOG_INFO(dev, "controller %s\n",
-					    enable ? "enabled" : "disabled");
+			AZIHSM_DEV_LOG_ERROR(dev, "controller %s [CSTS:0x%x]\n",
+					    enable ? "enabled" : "disabled", csts.val);
 
 			if (csts.fld.cfs) {
 				AZIHSM_DEV_LOG_ERROR(
@@ -214,7 +214,7 @@ static int azihsm_ctrl_hw_wait_ready(struct azihsm_ctrl *ctrl, bool enable)
 		}
 
 		if (time_after(jiffies, timeout)) {
-			AZIHSM_DEV_LOG_ERROR(dev, "controller has timedout\n");
+			AZIHSM_DEV_LOG_ERROR(dev, "controller has timedout [CSTS:0x%x]\n", csts.val);
 			err = -ETIMEDOUT;
 			goto err;
 		}
@@ -246,17 +246,17 @@ static int azihsm_ctrl_disable_enabled_controller(struct azihsm_ctrl *ctrl)
 
 	csts.val = readl(&ctrl->reg->csts);
 	cc.val = readl(&ctrl->reg->cc);
-	AZIHSM_DEV_LOG_INFO(
+	AZIHSM_DEV_LOG_ERROR(
 		&ctrl->pdev->dev,
-		"[INFO: %s ctrl:%p CSTS REGISTER VALUE:0x%x CC REGISTER VALUE:0x%x\n",
+		"[%s ctrl:%p CSTS REGISTER VALUE:0x%x CC REGISTER VALUE:0x%x\n",
 		__func__, ctrl, csts.val, cc.val);
 	if (csts.fld.rdy || cc.fld.en) {
 		/*
 		 * Controller is enabled.
 		 */
-		AZIHSM_DEV_LOG_INFO(
+		AZIHSM_DEV_LOG_ERROR(
 			&ctrl->pdev->dev,
-			"[INFO: controller enabled. Disabling] %s azihsm_ctrl:%p\n",
+			"[controller enabled. Disabling] %s azihsm_ctrl:%p\n",
 			__func__, ctrl);
 
 		ret = azihsm_ctrl_hw_disable(ctrl);
@@ -267,9 +267,9 @@ static int azihsm_ctrl_disable_enabled_controller(struct azihsm_ctrl *ctrl)
 				__func__, ctrl, ret);
 		}
 	} else {
-		AZIHSM_DEV_LOG_INFO(
+		AZIHSM_DEV_LOG_ERROR(
 			&ctrl->pdev->dev,
-			"[INFO: controller not enabled. Nothing to do] %s azihsm_ctrl:%p\n",
+			"[controller not enabled. Nothing to do] %s azihsm_ctrl:%p\n",
 			__func__, ctrl);
 
 		ret = 0;
@@ -351,16 +351,23 @@ hw_ready_err:
 
 int azihsm_ctrl_hw_nssr(struct azihsm_ctrl *ctrl)
 {
+	int err;
 	AZIHSM_DEV_LOG_ENTRY(&ctrl->pdev->dev, "%s mcr_ctrl:%p\n", __func__,
 			     ctrl);
+
 	writel(NVME_SS_RESET_SIGNATURE, &ctrl->reg->ssr);
 
-	//
-	// Firmware is ignoring the NSSR bit right now.
-	// We will revisit if we need to wait for the
-	// controller disable to happen, like when the
-	// enable bit is reset. For now just return success.
-	//
+	AZIHSM_DEV_LOG_ENTRY(&ctrl->pdev->dev, "%s Issued NSSR |Waiting For Rdy To Clear|\n", __func__);
+
+	err = azihsm_ctrl_hw_wait_ready(ctrl, false);
+	if (err) {
+		AZIHSM_DEV_LOG_ERROR(
+			&ctrl->pdev->dev,
+			"[ERROR] %s azihsm_ctrl:%p azihsm_ctrl_hw_wait_ready failed err:%d\n",
+			__func__, ctrl, err);
+		return err;
+	}
+
 	return 0;
 }
 
@@ -765,6 +772,8 @@ int azihsm_ctrl_init(struct azihsm_ctrl *ctrl,
 {
 	int err;
 	struct azihsm_ioq_cfg ioq_cfg = { 0 };
+	union azihsm_ctrl_cmd_feat_data feat_data = { 0 };
+	struct fw_capabilities fw_caps;
 
 	AZIHSM_CTRL_ST_RESET(ctrl);
 	AZIHSM_CTRL_SET_ABORT_STATE(ctrl, AZIHSM_CONTROLLER_IS_NOT_IN_ABORT);
@@ -814,6 +823,18 @@ int azihsm_ctrl_init(struct azihsm_ctrl *ctrl,
 		goto sw_enable_fail;
 	}
 
+	err = azihsm_ctrl_cmd_get_feat(ctrl, AZIHSM_CTRL_CMD_FEAT_ID_AES_FW_CAPS, &feat_data );
+	if (err) {
+		AZIHSM_LOG_ERROR(
+			"%s azihsm_ctrl:%p azihsm_ctrl_cmd_get_feat failed err:%d\n",
+			__func__, ctrl, err);
+		/* This is not fatal, so just continue on and the flags will indicate there are no features */
+	}
+
+	fw_caps=feat_data.fw_caps;
+	ctrl->aes_gcm_align_workaround=fw_caps.aes_gcm_workaround?true:false;
+	AZIHSM_LOG_INFO("%s Firmware Feature GCM Workaround %d", __func__, ctrl->aes_gcm_align_workaround);
+
 	ctrl->level_one_abort_count = 0;
 	ctrl->level_two_abort_count = 0;
 	ctrl->proc_not_own_fd_cnt = 0;
@@ -852,10 +873,11 @@ void azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
 		// We cannot remove the memory, till the controller is
 		// disabled.
 		//
-		if (abort_type == ABORT_TYPE_APP_L2_CTRL_NSSR)
+		if (abort_type == ABORT_TYPE_APP_L2_CTRL_NSSR) {
 			azihsm_ctrl_hw_nssr(ctrl);
-		else
+		} else {
 			azihsm_ctrl_hw_disable(ctrl);
+		}
 
 		azihsm_ctrl_sw_disable(ctrl, abort);
 	} else {

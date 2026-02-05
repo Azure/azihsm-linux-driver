@@ -10,7 +10,7 @@
 #define AZIHSM_CTRL_DEV_INFO_SN_LEN (32 + 1)
 #define AZIHSM_CTRL_DEV_INFO_MN_LEN (4 + 1)
 #define AZIHSM_CTRL_DEV_INFO_FR_LEN (32 + 1)
-#define AZIHSM_CTRL_DEV_INFO_DR_LEN (32 + 1)
+#define AZIHSM_CTRL_DEV_INFO_DR_LEN (15 + 1)
 
 #define AZIHSM_CTRL_DEV_INFO_ENTROPY_LENGTH 32
 
@@ -22,11 +22,12 @@ struct azihsm_ctrl_dev_info {
 	char model_num[AZIHSM_CTRL_DEV_INFO_MN_LEN];
 	char firmware_rev[AZIHSM_CTRL_DEV_INFO_FR_LEN];
 	char driver_rev[AZIHSM_CTRL_DEV_INFO_DR_LEN];
+	char rsvd[17];
 	char device_entropy[AZIHSM_CTRL_DEV_INFO_ENTROPY_LENGTH];
 };
 
 struct azihsm_ctrl;
 int azihsm_ctrl_dev_get_dev_info(struct azihsm_ctrl *ctrl,
-				 struct azihsm_ctrl_dev_info *dev_info);
+			      struct azihsm_ctrl_dev_info *dev_info);
 
 #endif //_LINUX_AZIHSM_CTRL_DEV_IOCTL_H

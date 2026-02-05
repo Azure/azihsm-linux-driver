@@ -469,7 +469,7 @@ module_init(azihsm_init);
 module_exit(azihsm_exit);
 
 MODULE_AUTHOR(
-	"Ajitabh Saxena <ajisaxena@microsoft.com>, RK Saripalli <rsaripalli@microsoft.com>");
+	"Vishal Soni <vsoni@microsoft.com>, Ajitabh Saxena <ajisaxena@microsoft.com>, RK Saripalli <rsaripalli@microsoft.com>");
 MODULE_DESCRIPTION("Azure Integrated HSM Driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(AZIHSM_DRIVER_VERSION);

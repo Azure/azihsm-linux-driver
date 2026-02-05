@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
+//#define DMA_IO_DEBUG_ON 1
+
 #include <linux/mm.h>
 #include "azihsm_ioq.h"
 #include "azihsm_dma_io.h"
@@ -25,14 +27,14 @@ static void azihsm_dma_io_dbg_dump(struct azihsm_dma_io *dma_io, bool dump_all)
 			     "%s: dma_io Dump\n"
 			     "pg_sg_mem:%p\n"
 			     "pages Array: %p\n"
-			     "page_cnt:%d\n"
+			     "page_cnt:%u\n"
 			     "sg:%p\n"
 			     "sg_cnt:%d\n"
 			     "uva: %p\n"
 			     "ubuff_sz:%d\n"
 			     "dir:%d\n"
 			     "hw_sgl_mem_kva:%p\n"
-			     "hw_sgl_mem_paddr:%lld\n"
+			     "hw_sgl_mem_paddr:%llx\n"
 			     "coh_mem_sz:%d\n"
 			     "hw_seg_cnt:%d\n",
 			     __func__, dma_io->pg_sg_mem, dma_io->pages,
@@ -46,29 +48,29 @@ static void azihsm_dma_io_dbg_dump(struct azihsm_dma_io *dma_io, bool dump_all)
 
 	if (dma_io->pages && dma_io->page_cnt) {
 		tot_len = 0;
-		AZIHSM_DEV_LOG_INFO(&dma_io->pdev->dev, "OS SGL =======\n");
+		AZIHSM_LOG_DEBUG("OS SGL =======\n");
 
 		for (idx = 0; idx < dma_io->sg_cnt; idx++) {
-			AZIHSM_DEV_LOG_INFO(&dma_io->pdev->dev,
-				"sg[%d]: addr:%lld Len:%d",
-			azihsm_dma_io_get_sgle_paddr(dma_io, idx),
-						azihsm_dma_io_get_sgle_len(dma_io, idx);
+			AZIHSM_LOG_DEBUG(
+				"sg[%d]: addr:%llx Len:%d", idx,
+						azihsm_dma_io_get_sgle_paddr(dma_io, idx),
+						azihsm_dma_io_get_sgle_len(dma_io, idx));
 
-			tot_len += azihsm_dma_io_get_sgle_len(dma_io, idx)
+			tot_len += azihsm_dma_io_get_sgle_len(dma_io, idx);
 		}
 	}
+	AZIHSM_LOG_DEBUG("OS SGL Dump Complete");
 
 	/*
 	 * Total DMA transfer that is being setup is
 	 * using the SGL should be  same that what
 	 * the user requested
 	 */
-	WARN_ON(tot_len == dma_io->ubuff_sz);
+	WARN_ON(tot_len != dma_io->ubuff_sz);
 
 	if (dma_io->hw_sgl_mem_kva && dma_io->hw_seg_cnt) {
-		AZIHSM_DEV_LOG_INFO(
-			&dma_io->pdev->dev,
-			"TO DO: Dumping HW SGL Assmues contiguous memory\n HW Desc Dump =======\n");
+		AZIHSM_LOG_DEBUG(
+			"TO DO: Dumping HW SGL Assmues contiguous memory\nHW Desc Dump =======\n");
 
 		/*
 		 * TO DO
@@ -81,15 +83,15 @@ static void azihsm_dma_io_dbg_dump(struct azihsm_dma_io *dma_io, bool dump_all)
 
 		tot_len = 0;
 		for (idx = 0; idx < dma_io->sg_cnt; idx++) {
-			AZIHSM_DEV_LOG_INFO(
-				&dma_io->pdev->dev,
-				"sg[%d]: addr:%lld Len:%d DescType:%d DescSubType:%d",
+			AZIHSM_LOG_DEBUG(
+				"sg[%d]: addr:%llx Len:%d DescType:%d DescSubType:%d", idx,
 				p_hw_desc->addr, p_hw_desc->len,
 				p_hw_desc->desc_type, p_hw_desc->desc_sub_type);
 
 			tot_len += p_hw_desc->len;
 			p_hw_desc++;
 		}
+		AZIHSM_LOG_DEBUG("HW SGL Dump Complete");
 	}
 
 	//
@@ -97,7 +99,9 @@ static void azihsm_dma_io_dbg_dump(struct azihsm_dma_io *dma_io, bool dump_all)
 	// in HW Desc should be same that what
 	// the user requested
 	//
-	WARN_ON(tot_len == dma_io->ubuff_sz);
+	WARN_ON(tot_len != dma_io->ubuff_sz);
+
+AZIHSM_DEV_LOG_EXIT(&dma_io->pdev->dev, "DMA Buffer Dump Complete");
 }
 #endif
 

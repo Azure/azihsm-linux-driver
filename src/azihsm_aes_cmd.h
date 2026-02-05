@@ -84,11 +84,17 @@ struct azihsm_aes_sqe_cmd_specific {
 		struct {
 			u8 rsvd1[3];
 			u32 key_id; // Key Identifier
-			u32 rsvd2;
+			u32 actual_aad_len; // Unaligned AAD Length
 			u8 tag[AZIHSM_AES_TAG_LEN]; // AES Tag
 			u8 iv[AZIHSM_AES_IV_LEN]; // AES Initialization Vector
-			u32 add_data_len; // Additional Data Length
-			u32 rsvd3[5];
+			u32 aligned_aad_len; // Total Data Length (Aligned)
+			u8 unaligned_src_data_len; 
+			u8 unaligned_dst_data_len; 
+			u16 rsvd2;
+			u32 unaligned_src_data_addr_low;
+			u32 unaligned_src_data_addr_high;
+			u32 unaligned_dst_data_addr_low;
+			u32 unaligned_dst_data_addr_high;
 		} gcm;
 
 		struct {
@@ -144,8 +150,10 @@ struct azihsm_aes_cqe {
 	struct azihsm_aes_cmd_attr attr; /**< Attributes */
 	u16 cmd_id; /**< Command ID */
 	struct azihsm_aes_cqe_cmd_spec cmd_spec; /**< Command specific data */
-	u32 iv_from_fw[3];
-	u32 rsvd[5];
+	u8  iv_from_fw[AZIHSM_AES_IV_LEN];
+	u32 rsvd[3];
+	u32 unaligned_dst_data_len;
+	u32 fips_approved;
 	u32 len;
 	u16 sq_head; /**< Submission queue head */
 	u16 sq_id; /**< Submission queue ID */
@@ -182,6 +190,13 @@ struct azihsm_aes_cmd {
 	 * Initialized to -1 and then to a valid value
 	 */
 	int tag;
+
+	/*
+	 * The single buffer for Unaligned data is kept here
+	 */
+	void *aux_buffer_kva;
+	dma_addr_t hw_addr;
+	u32 unaligned_data_size;
 };
 
 void azihsm_aes_cmd_init(struct azihsm_aes_cmd *cmd, const u8 opc,
@@ -189,5 +204,8 @@ void azihsm_aes_cmd_init(struct azihsm_aes_cmd *cmd, const u8 opc,
 			 const u8 cipher);
 
 int azihsm_aes_cmd_process(struct azihsm_aes *aes, struct azihsm_aes_cmd *cmd);
+
+void dump_aes_cmd_sqe(struct azihsm_aes_cmd *cmd);
+void dump_aes_cmd_cqe(struct azihsm_aes_cmd *cmd);
 
 #endif // _LINUX_AZIHSM_AES_CMDS_H

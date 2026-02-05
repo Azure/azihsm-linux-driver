@@ -134,12 +134,18 @@ struct azihsm_ctrl_cmd_sqe_abort {
 static_assert(sizeof(struct azihsm_ctrl_cmd_sqe_abort) ==
 	      AZIHSM_CTRL_CMD_SQE_SIZE);
 
+struct fw_capabilities {
+	u32 aes_gcm_workaround : 1;
+	u32 rsvd : 31;
+};
+
 union azihsm_ctrl_cmd_feat_data {
 	u32 val;
 	struct {
 		u16 sq_cnt;
 		u16 cq_cnt;
 	} queue_cnt;
+	struct fw_capabilities fw_caps;
 };
 
 static_assert(sizeof(union azihsm_ctrl_cmd_feat_data) == 4);
@@ -228,6 +234,7 @@ enum azihsm_ctrl_cmd_cns {
 enum azihsm_ctrl_cmd_feat_id {
 	AZIHSM_CTRL_CMD_FEAT_ID_HSM_QUEUE_CNT = 0x07,
 	AZIHSM_CTRL_CMD_FEAT_ID_AES_QUEUE_CNT = 0xC1,
+	AZIHSM_CTRL_CMD_FEAT_ID_AES_FW_CAPS = 0xC2,
 };
 
 int azihsm_ctrl_cmd_ident(struct azihsm_ctrl *ctrl, dma_addr_t prp1);

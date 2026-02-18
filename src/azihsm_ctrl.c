@@ -11,6 +11,7 @@
 #include <linux/version.h>
 #include <linux/workqueue.h>
 #include <linux/timer.h>
+#include <linux/delay.h>
 
 #define AZIHSM_CTRL_DMA_PAGE_SIZE SZ_4K
 #define AZIHSM_CTRL_IOQ_ID 0
@@ -181,6 +182,7 @@ static int azihsm_ctrl_hw_wait_ready(struct azihsm_ctrl *ctrl, bool enable)
 	union azihsm_ctrl_reg_csts csts;
 	unsigned long timeout;
 	int ready = enable ? 1 : 0;
+	unsigned int inv_rd_rtry_cnt = 5;
 	const struct device *dev = &ctrl->pdev->dev;
 
 	cap.val = readq(&ctrl->reg->cap);
@@ -190,14 +192,26 @@ static int azihsm_ctrl_hw_wait_ready(struct azihsm_ctrl *ctrl, bool enable)
 			     enable ? "enabling" : "disabling");
 	for (;;) {
 		csts.val = readl(&ctrl->reg->csts);
+
 		if (csts.val == ~0) {
+
+			if (inv_rd_rtry_cnt) {
+
+				AZIHSM_DEV_LOG_ERROR(dev,"Bad Device Sts [CSTS:0x%x] [inv_rd_rtry_cnt:%u]\n",
+					csts.val,inv_rd_rtry_cnt);
+
+				inv_rd_rtry_cnt--;
+				mdelay(50); // 50 milliseconds delay before retrying
+				continue;
+			}
+
 			AZIHSM_DEV_LOG_ERROR(dev, "device has gone [CSTS:0x%x]\n", csts.val);
 			err = -ENODEV;
 			goto err;
 		}
 
 		if (csts.fld.rdy == ready) {
-			AZIHSM_DEV_LOG_ERROR(dev, "controller %s [CSTS:0x%x]\n",
+			AZIHSM_DEV_LOG_ALWAYS(dev, "controller %s [CSTS:0x%x]\n",
 					    enable ? "enabled" : "disabled", csts.val);
 
 			if (csts.fld.cfs) {
@@ -246,7 +260,7 @@ static int azihsm_ctrl_disable_enabled_controller(struct azihsm_ctrl *ctrl)
 
 	csts.val = readl(&ctrl->reg->csts);
 	cc.val = readl(&ctrl->reg->cc);
-	AZIHSM_DEV_LOG_ERROR(
+	AZIHSM_DEV_LOG_ALWAYS(
 		&ctrl->pdev->dev,
 		"[%s ctrl:%p CSTS REGISTER VALUE:0x%x CC REGISTER VALUE:0x%x\n",
 		__func__, ctrl, csts.val, cc.val);
@@ -254,7 +268,7 @@ static int azihsm_ctrl_disable_enabled_controller(struct azihsm_ctrl *ctrl)
 		/*
 		 * Controller is enabled.
 		 */
-		AZIHSM_DEV_LOG_ERROR(
+		AZIHSM_DEV_LOG_ALWAYS(
 			&ctrl->pdev->dev,
 			"[controller enabled. Disabling] %s azihsm_ctrl:%p\n",
 			__func__, ctrl);
@@ -267,7 +281,7 @@ static int azihsm_ctrl_disable_enabled_controller(struct azihsm_ctrl *ctrl)
 				__func__, ctrl, ret);
 		}
 	} else {
-		AZIHSM_DEV_LOG_ERROR(
+		AZIHSM_DEV_LOG_ALWAYS(
 			&ctrl->pdev->dev,
 			"[controller not enabled. Nothing to do] %s azihsm_ctrl:%p\n",
 			__func__, ctrl);
@@ -275,7 +289,7 @@ static int azihsm_ctrl_disable_enabled_controller(struct azihsm_ctrl *ctrl)
 		ret = 0;
 	}
 
-	AZIHSM_DEV_LOG_EXIT(&ctrl->pdev->dev,
+	AZIHSM_DEV_LOG_ALWAYS(&ctrl->pdev->dev,
 			    "[EXIT] %s azihsm_ctrl:%p return value:%d\n",
 			    __func__, ctrl, ret);
 	return ret;

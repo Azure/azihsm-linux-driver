@@ -62,4 +62,6 @@ extern unsigned int log_mask;
 #define AZIHSM_DEV_LOG_EXIT(dev, fmt, ...)                                     \
 	AZIHSM_DEV_LOG_MSG(dev, AZIHSM_LOG_LEVEL_EXIT, dev_info, "EXIT: " fmt, \
 			   ##__VA_ARGS__)
+#define AZIHSM_DEV_LOG_ALWAYS(dev, fmt, ...)                                     \
+	dev_err(dev, "[%s | %s] " fmt, AZIHSM_DRIVER_VERSION, __func__, ##__VA_ARGS__);
 #endif // _LINUX_AZIHSM_LOG_H

@@ -874,11 +874,19 @@ ioq_fail:
 	return err;
 }
 
-void azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
+int azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
 			u32 abort_type)
 {
 	AZIHSM_LOG_ENTRY("%s azihsm_ctrl:%p\n", __func__, ctrl);
-
+	/*
+	 * We are going to return error in case of abort
+	 * as the abort path is the only one looking at this.
+	 * In normal path we do not care about the return value
+	 * as we are shutting down the driver and we want to do best effort cleanup.
+	 * In abort, we do not want to reinitialize the controller
+	 * if the disable/NSSR itself fails.
+	*/
+	int rc = 0;
 	if (abort) {
 		//
 		// First disable the hardware if it was abort
@@ -888,12 +896,45 @@ void azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
 		// disabled.
 		//
 		if (abort_type == ABORT_TYPE_APP_L2_CTRL_NSSR) {
-			azihsm_ctrl_hw_nssr(ctrl);
+			rc = azihsm_ctrl_hw_nssr(ctrl);
 		} else {
-			azihsm_ctrl_hw_disable(ctrl);
+			rc = azihsm_ctrl_hw_disable(ctrl);
 		}
 
+		/*
+		 * In level-2 abort, we should first disable the controller,
+		 * wait for the controller to be disabled and then flush all the pending
+		 * commands in the HSM and AES pools. This is to make sure that there is
+		 * no race condition between the interrupt handlers and the abort handler
+		 * flush commands. Once the controller is disabled, we know that the
+		 * ISR would not be firing. We are safe to flush the commands.
+		 * Here are the Steps disabling the controller in level-2 abort:
+		 * 1. Disable the controller by either firing NSSR or disabling the controller
+		 * 2. Deterministic wait for tasklet to finish. After this we are done
+		 *    processing the interrupts as there are no more interrupts coming in after
+		 *    the controller is disabled. This Marks the end of IO completion
+		 *    operations as the completions are not being processed anymore.
+		 * 3. Then Flush all the pending commands in the HSM and AES pools.
+		 *
+		 * Note: tasklet_kill waits for existing tasklet to complete and prevents new tasklets from being scheduled.
+		 * This is needed to make sure that we have completed processing all the interrupts before we flush
+		 * the commands in the HSM and AES pools. If we do not wait for the existing tasklet to complete,
+		 * there is a possibility that the tasklet is in the middle of processing an interrupt and is accessing the
+		 * command structures while we are flushing the commands in the HSM and AES pools,
+		 * which can lead to use after free issues.
+		 */
+
+		AZIHSM_DEV_LOG_ALWAYS(&ctrl->pdev->dev, "L2-Abort: Kill Tasklet\n");
+        tasklet_kill(&ctrl->tasklet); // Guarantee that the running tasklets are finished and no other tasklets will be scheduled after this.
+
+		AZIHSM_DEV_LOG_ALWAYS(&ctrl->pdev->dev, "L2-Abort: Flushing all commands in HSM pool\n");
+		azihsm_ctrl_flush_cmds_from_ioqs(ctrl, &ctrl->hsm.ioq_pool);
+
+		AZIHSM_DEV_LOG_ALWAYS(&ctrl->pdev->dev, "L2-Abort: Flushing all commands in AES pool\n");
+		azihsm_ctrl_flush_cmds_from_ioqs(ctrl, &ctrl->aes.ioq_pool);
+
 		azihsm_ctrl_sw_disable(ctrl, abort);
+
 	} else {
 		//
 		// We are shutting down, disable the
@@ -918,7 +959,8 @@ void azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
 
 	AZIHSM_CTRL_ST_RESET(ctrl);
 
-	AZIHSM_LOG_EXIT("%s azihsm_ctrl:%p\n", __func__, ctrl);
+	AZIHSM_LOG_EXIT("%s azihsm_ctrl:%p rc=%d [%s]\n", __func__, ctrl, rc, rc ? "ERROR" : "SUCCESS");
+	return rc;
 }
 
 /*

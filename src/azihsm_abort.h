@@ -76,4 +76,6 @@ bool azihsm_is_ioq_disabled(struct azihsm_ioq *ioq);
 
 void azihsm_health_monitor(struct work_struct *work);
 
+void azihsm_delay(unsigned int millisec);
+
 #endif // _LINUX_AZIHSM_IOQ_H

@@ -11,12 +11,6 @@
 
 extern bool azihsm_pf_lvl2_abort_enabled;
 
-void azihsm_delay(unsigned int millisec)
-{
-	DECLARE_COMPLETION(temp_comp);
-	wait_for_completion_timeout(&temp_comp, msecs_to_jiffies(millisec));
-}
-
 /*
  * azihsm_is_ioq_disabled
  *  Returns true if IOQ is disabled else false
@@ -412,7 +406,7 @@ static int azihsm_level_two_abort(struct azihsm_ctrl *ctrl, u32 abort_type)
 
 		AZIHSM_DEV_LOG_ERROR(
 			dev, "[ERROR] azihsm_ctrl_deinit failed. Level two abort rc=%d\n", rc);
-
+		
 		return rc;
 	}
 

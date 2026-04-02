@@ -76,4 +76,4 @@ bool azihsm_is_ioq_disabled(struct azihsm_ioq *ioq);
 
 void azihsm_health_monitor(struct work_struct *work);
 
-#endif // _LINUX_AZIHSM_IOQ_H
+#endif // _LINUX_AZIHSM_ABORT_H

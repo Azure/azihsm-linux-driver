@@ -396,19 +396,19 @@ static int azihsm_level_two_abort(struct azihsm_ctrl *ctrl, u32 abort_type)
 	/*
 	 * Disabled all queues above.
 	 * Any completions (due to DPC and bottom half) for these queues
-	 * will not be completed. Instead they are flushed
+	 * will not be completed. 
 	 */
-
-	AZIHSM_DEV_LOG_ALWAYS(
-		dev, "Level two abort. Flushing all commands in HSM pool\n");
-	azihsm_ctrl_flush_cmds_from_ioqs(ctrl, &ctrl->hsm.ioq_pool);
-
-	AZIHSM_DEV_LOG_ALWAYS(
-		dev, "Level two abort. Flushing all commands in AES pool\n");
-	azihsm_ctrl_flush_cmds_from_ioqs(ctrl, &ctrl->aes.ioq_pool);
-
+	
 	AZIHSM_DEV_LOG_ALWAYS(dev, "Level two abort. Deiniting the controller\n");
-	azihsm_ctrl_deinit(ctrl, true, abort_type);
+	rc = azihsm_ctrl_deinit(ctrl, true, abort_type);
+
+	if (rc) {
+
+		AZIHSM_DEV_LOG_ERROR(
+			dev, "[ERROR] azihsm_ctrl_deinit failed. Level two abort rc=%d\n", rc);
+		
+		return rc;
+	}
 
 	/*
 	 * At this point any commands submitted by applications
@@ -418,6 +418,7 @@ static int azihsm_level_two_abort(struct azihsm_ctrl *ctrl, u32 abort_type)
 
 	AZIHSM_DEV_LOG_ALWAYS(dev,
 			    "Level two abort. Reinitializing the controller\n");
+
 	rc = azihsm_ctrl_init(ctrl, &ctrl->saved_cfg, true);
 
 	if (rc) {

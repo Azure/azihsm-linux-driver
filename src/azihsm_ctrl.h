@@ -300,7 +300,7 @@ struct azihsm_ctrl {
 int azihsm_ctrl_init(struct azihsm_ctrl *ctrl,
 		     const struct azihsm_ctrl_cfg *cfg, const bool abort);
 
-void azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
+int azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
 			u32 abort_type);
 
 void azihsm_ctrl_sw_disable(struct azihsm_ctrl *ctrl, const bool abort);

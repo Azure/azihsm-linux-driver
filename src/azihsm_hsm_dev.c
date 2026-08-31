@@ -7,9 +7,11 @@
 #include "azihsm_aes_dev_ioctl.h"
 #include "azihsm_hsm_cmd.h"
 #include "azihsm_abort.h"
+#include "azihsm_dma_io.h"
 
 #include <linux/idr.h>
 #include <linux/mutex.h>
+#include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <linux/moduleparam.h>
@@ -89,6 +91,89 @@ static void azihsm_hsm_fill_error_sts(struct azihsm_hsm *hsm,
 	cmd->out.u.generic.ioctl_extended_status = status_code;
 }
 
+/**
+ * azihsm_hsm_dump_data_xfer_sqe
+ * Dumps the SQE and associated metadata buffer for CP_CMD_SET_DATA_XFER commands.
+ * This function is for testing and debugging purposes only and can be easily removed later.
+ *
+ * Parameters:
+ *	hsm: Pointer to the HSM device structure
+ *	sqe: Pointer to the Submission Queue Entry to dump
+ *	src_data: Pointer to the source data union containing metadata address
+ */
+# if 0
+static void azihsm_hsm_dump_data_xfer_sqe(
+	struct azihsm_hsm *hsm,
+	struct azihsm_hsm_cmd_generic_sqe *sqe,
+	union azihsm_hsm_generic_cmd_sqe_src_data *src_data)
+{
+	int i;
+	struct azihsm_hsm_data_xfer_metadata *metadata = NULL;
+	unsigned long virt_addr;
+
+	if (!hsm || !sqe || !src_data) {
+		pr_err("azihsm_hsm_dump_data_xfer_sqe: Invalid parameters\n");
+		return;
+	}
+
+	AZIHSM_LOG_DEBUG("=== DATA XFER SQE DUMP START ===\n");
+
+	/* Dump SQE fields */
+	AZIHSM_LOG_DEBUG("SQE Fields:\n");
+	AZIHSM_LOG_DEBUG("  Opcode (opc): 0x%x\n", sqe->opc);
+	AZIHSM_LOG_DEBUG("  Command Set (set): 0x%x\n", sqe->set);
+	AZIHSM_LOG_DEBUG("  PSDT: 0x%x\n", sqe->psdt);
+	AZIHSM_LOG_DEBUG("  Command ID (cid): 0x%x\n", sqe->cid);
+	AZIHSM_LOG_DEBUG("  Source Length (src_len): 0x%x\n", sqe->src_len);
+	AZIHSM_LOG_DEBUG("  Destination Length (dst_len): 0x%x\n", sqe->dst_len);
+	AZIHSM_LOG_DEBUG("  Source PRP First: 0x%llx\n", sqe->src.prp.fst);
+	AZIHSM_LOG_DEBUG("  Source PRP Second: 0x%llx\n", sqe->src.prp.snd);
+	AZIHSM_LOG_DEBUG("  Destination PRP First: 0x%llx\n", sqe->dst.prp.fst);
+	AZIHSM_LOG_DEBUG("  Destination PRP Second: 0x%llx\n", sqe->dst.prp.snd);
+
+	/* Dump source data fields */
+	AZIHSM_LOG_DEBUG("SQE Source Data Fields:\n");
+	AZIHSM_LOG_DEBUG("  Session Control Flags: 0x%x\n",
+			 src_data->metadata_with_session.session_ctrl_flags.opcode);
+	AZIHSM_LOG_DEBUG("  Session ID: 0x%x\n",
+			 src_data->metadata_with_session.session_id);
+	AZIHSM_LOG_DEBUG("  Metadata Page Address (PA): 0x%llx\n",
+			 src_data->metadata_with_session.metadata_page_addr);
+
+	/* Try to map and dump metadata buffer */
+	if (src_data->metadata_with_session.metadata_page_addr != 0) {
+		virt_addr = (unsigned long)phys_to_virt(
+			src_data->metadata_with_session.metadata_page_addr);
+		metadata = (struct azihsm_hsm_data_xfer_metadata *)virt_addr;
+
+		AZIHSM_LOG_DEBUG("\nMetadata Buffer Contents:\n");
+		AZIHSM_LOG_DEBUG("  Buffer Count: %u\n", metadata->buffer_count);
+
+		if (metadata->buffer_count >
+		    AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS) {
+			AZIHSM_LOG_DEBUG(
+				"  WARNING: Buffer count (%u) exceeds maximum (%u)\n",
+				metadata->buffer_count,
+				AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS);
+		}
+
+		for (i = 0; i < metadata->buffer_count &&
+		     i < AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS; i++) {
+			AZIHSM_LOG_DEBUG("  Buffer[%d]:\n", i);
+			AZIHSM_LOG_DEBUG("    Transfer Length: 0x%x (%u bytes)\n",
+					 metadata->buffers[i].xfer_length,
+					 metadata->buffers[i].xfer_length);
+			AZIHSM_LOG_DEBUG("    HW SGL Memory Address (PA): 0x%llx\n",
+					 metadata->buffers[i].hw_sgl_mem_paddr);
+		}
+	} else {
+		AZIHSM_LOG_DEBUG("  Metadata Page Address is NULL\n");
+	}
+
+	AZIHSM_LOG_DEBUG("=== DATA XFER SQE DUMP END ===\n");
+}
+#endif 
+
 static int azihsm_hsm_passthrough_cmd(
 	struct azihsm_hsm *hsm, const __u16 opc, const __u16 cmdset,
 	const __u8 psdt, dma_addr_t src_buf_first_4K_pa,
@@ -150,16 +235,27 @@ void azihsm_hsm_force_close_session(struct azihsm_hsm *hsm,
 	union azihsm_hsm_generic_cmd_sqe_src_data src_data;
 	u32 cpl_sts_out = 0;
 
-	mutex_lock(&hsm->ctrl->abort_mutex);
 	memset(&src_data, 0, sizeof(src_data));
 	src_data.session_data.session_id = session_id;
 	src_data.session_data.session_ctrl_flags.opcode =
 		AZIHSM_OPCODE_FLOW_CLOSE_SESSION;
 	src_data.session_data.session_ctrl_flags.in_session_cmd = 1;
+
+	/*
+	 * NOTE: abort_mutex must NOT be held across the blocking passthrough
+	 * below. If the command times out, azihsm_hsm_generic_cmd_process()
+	 * calls azihsm_abort(), which acquires abort_mutex itself. As that
+	 * mutex is non-recursive, holding it here deadlocks this thread
+	 * against itself (observed after a TDISP StopInterface disables the
+	 * VF's SQ: the FLUSH_SESSION SQE is never fetched, so no CQE ever
+	 * arrives and the timeout path is guaranteed to run).
+	 * The mutex is only needed to serialise the session_flush_cnt update.
+	 */
 	(void)azihsm_hsm_passthrough_cmd(hsm, AZIHSM_HSM_FLUSH_SESSION_OPCODE,
 					 CP_CMD_SESSION_GENERIC, 0, 0, 0, 0, 0,
 					 0, 0, &src_data, NULL, &cpl_sts_out);
 
+	mutex_lock(&hsm->ctrl->abort_mutex);
 	hsm->ctrl->session_flush_cnt += 1;
 	mutex_unlock(&hsm->ctrl->abort_mutex);
 	/* no need for the cqe contents */
@@ -739,8 +835,8 @@ static int azihsm_ioctl_hsm_copy_user_buffers_to_dma_pool(
 dma_pool_alloc_fail:
 	azihsm_ioctl_hsm_free_dma_buffer_pools(
 		hsm, *src_first_4K_va, *src_first_4K_pa, *src_second_4K_va,
-		*src_second_4K_pa, *src_first_4K_va, *src_first_4K_pa,
-		*src_second_4K_va, *src_second_4K_pa);
+		*src_second_4K_pa, *dst_first_4K_va, *dst_first_4K_pa,
+		*dst_second_4K_va, *dst_second_4K_pa);
 
 	return err;
 }
@@ -815,6 +911,333 @@ static int azihsm_ioctl_hsm_copy_device_data_to_user_buffers(
 	}
 
 	return 0;
+}
+
+
+static void cleanup_dma_io_array(struct azihsm_dma_io *dma_io, int buffer_cnt)
+{
+	unsigned int i;
+
+	for (i = 0; i < buffer_cnt; i++) {
+		if (dma_io[i].uva && dma_io[i].hw_sgl_mem_kva) {
+			azihsm_dma_io_cleanup(&dma_io[i]);
+		}
+	}
+}
+
+static int azihsm_ioctl_hsm_process_data_xfer(
+	struct azihsm_hsm_fd_ctxt *ctxt,
+	struct azihsm_hsm *hsm,
+	struct azihsm_ctrl_data_xfer_cmd *user_data_xfer_cmd,
+	unsigned long arg
+)
+{
+	int err = -ENOMEM;
+	int cpl_sts_out = AZIHSM_IOQ_CMD_STS_SUCCESS;
+	dma_addr_t src_buf_first_4K_pa = 0, src_buf_second_4K_pa = 0;
+	dma_addr_t dst_buf_first_4K_pa = 0, dst_buf_second_4K_pa = 0;
+
+	void *src_buf_first_4K_va = NULL;
+	void *src_buf_second_4K_va = NULL;
+
+	void *dst_buf_first_4K_va = NULL;
+	void *dst_buf_second_4K_va = NULL;
+
+	struct azihsm_hsm_data_xfer_metadata *metadata_buf_va = NULL;
+	dma_addr_t metadata_buf_pa = 0;
+
+	__u32 user_dst_buf_length;
+	__u32 output_byte_count = 0;
+
+	struct azihsm_hsm_cmd_generic_cqe cqe;
+	union azihsm_hsm_generic_cmd_sqe_src_data src_data = { 0 };
+	struct azihsm_dma_io *dma_io;
+	int dma_io_count = 0;
+	unsigned int i;
+
+	user_data_xfer_cmd->generic_cmd.out.ctxt = user_data_xfer_cmd->generic_cmd.in.ctxt;
+
+	dma_io = kmalloc_array(AZIHSM_MAX_DATA_XFER_BUFFERS, sizeof(*dma_io), GFP_KERNEL);
+	if (!dma_io) {
+		user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status =
+			AZIHSM_CP_GENERIC_IOCTL_NO_MEMORY;
+		err = -ENOMEM;
+		goto error;
+	}
+
+	user_dst_buf_length = user_data_xfer_cmd->generic_cmd.in.dst_length;
+
+	//
+	// Just make sure that application did not pass in more than the max number of buffers we support.
+	// We will not support more than AZIHSM_MAX_DATA_XFER_BUFFERS [16] buffers in the data transfer command.
+	// If application passes in more than that, we will return an error.
+	//
+	if (user_data_xfer_cmd->dataxfer_buffers.buffer_cnt > AZIHSM_MAX_DATA_XFER_BUFFERS) {
+		AZIHSM_DEV_LOG_ERROR(
+			&hsm->pdev->dev,
+			"[%s:ERROR] Data Transfer Buffer Count Exceeds Max Buffers. buffer_cnt:%d max_buffers:%d",
+			__func__, user_data_xfer_cmd->dataxfer_buffers.buffer_cnt,
+			AZIHSM_MAX_DATA_XFER_BUFFERS);
+
+		user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status =
+			AZIHSM_CP_GENERIC_IOCTL_INVALID_INPUT_BUFFER;
+
+		err = -EINVAL;
+		goto error_free_dma_io;
+	}
+
+	/* Data transfer supports both in-session and no-session flows. */
+	err = azihsm_hsm_validate_session_in_ioctl_cmd(
+							ctxt,
+							&user_data_xfer_cmd->generic_cmd,
+							&src_data);
+
+	if (err) {
+		AZIHSM_DEV_LOG_ERROR(
+			&hsm->pdev->dev,
+			"[%s:ERROR] Session IOCTL Validation Failed Err:%d",
+			__func__, err);
+
+		goto error_free_dma_io;
+	}
+
+	/*
+	 * Map the user src and destination buffers to the device
+	 * Copy the data from the user source buffer to the device
+	 * source buffer before we issue the command to the device
+	 */
+	err = azihsm_ioctl_hsm_copy_user_buffers_to_dma_pool(
+		hsm, /* file handle context */
+		&user_data_xfer_cmd->generic_cmd, /* User ioctl buffer */
+		&src_buf_first_4K_va, &src_buf_first_4K_pa,
+		&src_buf_second_4K_va, &src_buf_second_4K_pa,
+		&dst_buf_first_4K_va, &dst_buf_first_4K_pa,
+		&dst_buf_second_4K_va, &dst_buf_second_4K_pa);
+
+	if (err) {
+		/*
+		 * Function would have filled up the extended status
+		 */
+
+		AZIHSM_DEV_LOG_ERROR(
+			&hsm->pdev->dev,
+			"[%s:ERROR] Copy User Buffers For Dma Pool Failure Err: %d",
+			__func__, err);
+
+		goto error_free_dma_io;
+	}
+
+	// Create the Metadata page.
+	metadata_buf_va =  dma_pool_alloc(hsm->page_pool, GFP_KERNEL, &metadata_buf_pa);
+	if (!metadata_buf_va) {
+		err = -ENOMEM;
+		AZIHSM_DEV_LOG_ERROR(
+			&hsm->pdev->dev,
+			"[%s:ERROR] Failed to allocate metadata buffer",
+			__func__);
+
+		user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status =
+			AZIHSM_CP_GENERIC_IOCTL_NO_MEMORY;
+
+		azihsm_ioctl_hsm_free_dma_buffer_pools(
+			hsm, src_buf_first_4K_va, src_buf_first_4K_pa,
+			src_buf_second_4K_va, src_buf_second_4K_pa,
+			dst_buf_first_4K_va, dst_buf_first_4K_pa,
+			dst_buf_second_4K_va, dst_buf_second_4K_pa);
+
+		goto error_free_dma_io;
+	}
+
+	memset(metadata_buf_va, 0, sizeof(struct azihsm_hsm_data_xfer_metadata));
+	metadata_buf_va->buffer_count = user_data_xfer_cmd->dataxfer_buffers.buffer_cnt;
+
+	// Create the SGL for each of the buffers in the data transfer command. The SGL will be passed to the device in the SQE.
+	for (i = 0; i < user_data_xfer_cmd->dataxfer_buffers.buffer_cnt; i++) {
+
+		err = azihsm_dma_io_init(
+					hsm->pdev,
+					user_data_xfer_cmd->dataxfer_buffers.buffers[i].buf_addr,
+				   	user_data_xfer_cmd->dataxfer_buffers.buffers[i].xfer_length,
+					DMA_TO_DEVICE,
+				   &dma_io[i]);
+
+		if (err) {
+
+			AZIHSM_DEV_LOG_ERROR(
+				&hsm->pdev->dev,
+				"[%s:ERROR] DMA IO Init Failed for buffer %d Err: %d",
+				__func__, i, err);
+
+			/*
+			 * The cleanup function takes the number of buffers to cleanup.
+			 * Since the current buffer failed, we will cleanup all the buffers
+			 * that were successfully created before this.
+			*/
+			user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status =
+					AZIHSM_CP_GENERIC_IOCTL_INPUT_BUFFER_ACCESS_ERROR;
+			dma_io_count = i;
+			goto dma_io_cleanup;
+		}
+
+		err = azihsm_dma_io_xlat(&dma_io[i]);
+		if (err) {
+			AZIHSM_DEV_LOG_ERROR(
+				&hsm->pdev->dev,
+				"[%s:ERROR] DMA IO Translate Failed for buffer %d Err: %d",
+				__func__, i, err);
+
+			/*
+			 * The cleanup function takes the number of buffers to cleanup.
+			 * Since the XLAT failed, the buffer was still created.
+			 * So our call to cleanup will include this buffer as well.
+			*/
+			user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status =
+					AZIHSM_CP_GENERIC_IOCTL_INPUT_BUFFER_ACCESS_ERROR;
+
+			dma_io_count = i + 1;
+			goto dma_io_cleanup;
+		}
+
+		/*
+		 * For the data transfer command the MAX data transfer supported in 32 KB.
+		 * This always fits in a single SGL segment. If the segment count is greater than 1,
+		 * there is something wrong with the SGL creation logic.
+		 *
+		 */
+
+		if (dma_io[i].hw_seg_cnt > 1) {
+
+			AZIHSM_DEV_LOG_ERROR(
+				&hsm->pdev->dev,
+				"[%s:ERROR] DMA SGL Segment Count Exceeds 1 for buffer %d Err: %d",
+				__func__, i, err);
+
+
+			/*
+			 * The cleanup function takes the number of buffers to cleanup.
+			 * Since the XLAT failed, the buffer was still created.
+			 * So our call to cleanup will include this buffer as well.
+			*/
+
+			user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status =
+					AZIHSM_CP_GENERIC_IOCTL_INPUT_BUFFER_ACCESS_ERROR;
+
+			err = -EINVAL;
+			dma_io_count = i + 1;
+			goto dma_io_cleanup;
+		}
+
+		// Update the metadata buffer with the SGL information for each of the buffers in the data transfer command.
+		metadata_buf_va->buffers[i].xfer_length = user_data_xfer_cmd->dataxfer_buffers.buffers[i].xfer_length;
+		metadata_buf_va->buffers[i].hw_sgl_mem_paddr = dma_io[i].hw_sgl_mem_paddr;
+	}
+
+	src_data.metadata_with_session.metadata_page_addr = metadata_buf_pa;
+
+	err = azihsm_hsm_passthrough_cmd(
+				hsm,
+				user_data_xfer_cmd->generic_cmd.in.opc,
+				user_data_xfer_cmd->generic_cmd.in.cmdset,
+				0,
+				src_buf_first_4K_pa,
+				src_buf_second_4K_pa,
+				user_data_xfer_cmd->generic_cmd.in.src_length,
+				dst_buf_first_4K_pa,
+				dst_buf_second_4K_pa,
+				user_dst_buf_length,
+				&src_data,
+				&cqe,
+				&cpl_sts_out);
+
+	if (err < 0) {
+		// EAGAIN is returned when abort is in progress or the command is
+		// aborted.
+
+		if (err == -EAGAIN) {
+			azihsm_hsm_fill_error_sts(hsm, &user_data_xfer_cmd->generic_cmd,
+						  cpl_sts_out);
+		}
+
+		AZIHSM_DEV_LOG_ERROR(
+			&hsm->pdev->dev,
+			"[%s:ERROR] Mcr Pass Through Cmd Failed Err: %d extended_sts:0x%x",
+			__func__, err,
+			user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status);
+
+		dma_io_count = user_data_xfer_cmd->dataxfer_buffers.buffer_cnt;
+		goto dma_io_cleanup;
+	}
+
+	/*
+	 * copy status from cqe and bytes returned back into user output buffer
+	 */
+
+	user_data_xfer_cmd->generic_cmd.out.status = cqe.psf.fld.sc;
+
+	output_byte_count = user_data_xfer_cmd->generic_cmd.out.u.generic.byte_count =
+		(u32)cqe.cqe_data.session_data.byte_count;
+
+	if (output_byte_count > user_dst_buf_length) {
+
+		AZIHSM_DEV_LOG_ERROR(
+			&hsm->pdev->dev,
+			"[%s:ERROR] Device has returned length=%d greater than expected size=%d\n",
+			__func__, output_byte_count,
+			user_dst_buf_length);
+
+		output_byte_count = user_dst_buf_length;
+	}
+
+	user_data_xfer_cmd->generic_cmd.out.u.generic.byte_count = output_byte_count;
+
+	// Copy the Destination Data Back To The User
+	err = azihsm_ioctl_hsm_copy_device_data_to_user_buffers(
+		ctxt->hsm,
+		&user_data_xfer_cmd->generic_cmd,
+		dst_buf_first_4K_va,
+		dst_buf_second_4K_va,
+		output_byte_count);
+
+	if (err) {
+		// Just log the error to make sure but
+		// Continue to copy the ioctl data structure
+		// back to the user.
+		AZIHSM_DEV_LOG_ERROR(
+			&hsm->pdev->dev,
+			"[%s:ERROR] Failed To Copy Device Data To User Buffer [Fst:%p, Snd:%p]  [CpySz:0x%x]\n",
+			__func__, dst_buf_first_4K_va,
+			dst_buf_second_4K_va, output_byte_count);
+	}
+
+	dma_io_count = user_data_xfer_cmd->dataxfer_buffers.buffer_cnt;
+
+dma_io_cleanup:
+	cleanup_dma_io_array(dma_io, dma_io_count);
+	if (metadata_buf_va)
+		dma_pool_free(hsm->page_pool, metadata_buf_va, metadata_buf_pa);
+
+	azihsm_ioctl_hsm_free_dma_buffer_pools(
+		hsm, src_buf_first_4K_va, src_buf_first_4K_pa,
+		src_buf_second_4K_va, src_buf_second_4K_pa,
+		dst_buf_first_4K_va, dst_buf_first_4K_pa,
+		dst_buf_second_4K_va, dst_buf_second_4K_pa);
+
+error_free_dma_io:
+	kfree(dma_io);
+
+error:
+	if (copy_to_user((void __user *)arg, user_data_xfer_cmd,
+			 sizeof(struct azihsm_ctrl_data_xfer_cmd))) {
+
+		err = -EFAULT;
+
+		AZIHSM_DEV_LOG_ERROR(
+			hsm->cdev_dev,
+			"[%s:ERROR] Error copying ioctl buffer back to user",
+			__func__);
+	}
+
+	return err;
 }
 
 /**
@@ -927,6 +1350,7 @@ static int azihsm_ioctl_hsm_process_generic_ioctl_session(
 		 */
 		(void)azihsm_hsm_process_session_in_cmd_completion(
 			ctxt, &src_data, &cqe);
+
 		output_byte_count = user_generic_cmd->out.u.generic.byte_count;
 
 		/*
@@ -1129,7 +1553,8 @@ static int azihsm_hsm_dev_open(struct inode *inode, struct file *file)
  */
 static int azihsm_ioctl_hsm_validate_argument(
 	struct azihsm_hsm_fd_ctxt *ctxt, unsigned long arg,
-	struct azihsm_cp_generic_cmd *user_generic_cmd)
+	struct azihsm_cp_generic_cmd *user_generic_cmd,
+	enum CP_CMD_SET expected_cmdset)
 {
 	struct azihsm_ioctl_header hdr;
 	const size_t required_size = sizeof(struct azihsm_cp_generic_cmd);
@@ -1189,11 +1614,12 @@ static int azihsm_ioctl_hsm_validate_argument(
 	 * are supported. Fail everything else.
 	 */
 
-	if (user_generic_cmd->in.cmdset != CP_CMD_SESSION_GENERIC) {
+	if (user_generic_cmd->in.cmdset != expected_cmdset) {
+
 		AZIHSM_DEV_LOG_ERROR(
 			ctxt->hsm->cdev_dev,
-			"[%s:ERROR] Ioctl buffer validation failed. Cmdset[%d] is not supported on this channel\n",
-			__func__, user_generic_cmd->in.cmdset);
+			"[%s:ERROR] Ioctl buffer validation failed. Cmdset[%d] is not supported for expected cmdset[%d]\n",
+			__func__, user_generic_cmd->in.cmdset, expected_cmdset);
 		user_generic_cmd->out.u.generic.ioctl_extended_status =
 			AZIHSM_CP_GENERIC_IOCTL_INVALID_CMDSET;
 		return -EINVAL;
@@ -1351,7 +1777,7 @@ static int azihsm_ioctl_reset_device(struct azihsm_ctrl *ctrl,
 
 	info.rst_out_data.abort_sts = ABORT_STATUS_SUCCESS;
 	err = azihsm_abort(ctrl, NULL, NULL, false,
-			   info.rst_in_data.abort_type);
+			   info.rst_in_data.abort_type, false);
 	if (err) {
 		AZIHSM_DEV_LOG_ERROR(
 			dev, "[%s] User Requested Abort Failed [err:%d]",
@@ -1370,6 +1796,138 @@ err:
 	return err;
 }
 
+
+static int azihsm_ioctl_hsm_validate_data_xfer(
+	struct azihsm_hsm_fd_ctxt *ctxt, unsigned long arg,
+	struct azihsm_ctrl_data_xfer_cmd *user_data_xfer_cmd)
+{
+	struct azihsm_ioctl_header hdr;
+	const size_t required_size = sizeof(struct azihsm_ctrl_data_xfer_cmd);
+	u8 session_ctrl_opcode;
+	int err = 0;
+	int i;
+
+	/*
+	 * Validate the ioctl buffer passed in by the user.
+	 * The buffer must have an ioctl header at offset 0.
+	 * Length in the header must be at least equal to the expected length
+	 * If source buffer length is greater than zero, source buffer must be non-NULL
+	 * If destination buffer length is greater than zero, destination buffer must be NON-nULL
+	 * Length of source and destination buffers must be less or equal to 8K.
+	 *
+	 * Returns 0 on success
+	 * Other values on failures.
+	 */
+
+	if (copy_from_user(&hdr, (void __user *)arg,
+			   sizeof(struct azihsm_ioctl_header))) {
+		AZIHSM_DEV_LOG_ERROR(
+			ctxt->hsm->cdev_dev,
+			"[%s:ERROR] copy_from_user failed (for ioctl header) length=%d(expected)\n",
+			__func__, (__u32)sizeof(struct azihsm_ioctl_header));
+		return -EINVAL;
+	}
+
+	if (hdr.szioctldata < (__u32)required_size) {
+		AZIHSM_DEV_LOG_ERROR(
+			ctxt->hsm->cdev_dev,
+			"[%s:ERROR] Length in ioctl header=%d is lesser than required size=%d\n",
+			__func__, hdr.szioctldata, (__u32)required_size);
+		return -EINVAL;
+	}
+	
+	// Header looks ok, lets copy the entire IOCTL buffer 
+	if (copy_from_user(user_data_xfer_cmd, (void __user *)arg,
+			   required_size)) {
+		AZIHSM_DEV_LOG_ERROR(
+			ctxt->hsm->cdev_dev,
+			"[%s:ERROR] copy_from_user failed length=%d(expected)\n",
+			__func__, (u32)required_size);
+
+		return -EINVAL;
+	}
+
+	// validate the buffer count
+	if ( (!user_data_xfer_cmd->dataxfer_buffers.buffer_cnt) || 
+		 (user_data_xfer_cmd->dataxfer_buffers.buffer_cnt > AZIHSM_MAX_DATA_XFER_BUFFERS) ||
+	 	 (user_data_xfer_cmd->dataxfer_buffers.buffer_cnt > AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS)) {
+
+		AZIHSM_DEV_LOG_ERROR(
+			ctxt->hsm->cdev_dev,
+			"[%s:ERROR] Data transfer buffer count [%d] exceeds the maximum allowed [App:%d  | Device:%d]\n",
+			__func__, user_data_xfer_cmd->dataxfer_buffers.buffer_cnt,
+			AZIHSM_MAX_DATA_XFER_BUFFERS,
+			AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS);
+
+		user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status =
+			AZIHSM_CP_GENERIC_IOCTL_INVALID_INPUT_BUFFER;
+
+		return -EINVAL;
+	}
+
+	session_ctrl_opcode = user_data_xfer_cmd->generic_cmd.in.u.session_data
+				      .session_control_flags.u.opcode;
+	if ((session_ctrl_opcode != AZIHSM_OPCODE_FLOW_NO_SESSION) &&
+	    (session_ctrl_opcode != AZIHSM_OPCODE_FLOW_IN_SESSION)) {
+		AZIHSM_DEV_LOG_ERROR(
+			ctxt->hsm->cdev_dev,
+			"[%s:ERROR] Invalid session flow opcode[%u] for DATA_XFER\n",
+			__func__, session_ctrl_opcode);
+		user_data_xfer_cmd->generic_cmd.out.u.generic
+			.ioctl_extended_status =
+			AZIHSM_CP_GENERIC_IOCTL_INVALID_SESSION_OPCODE;
+		return -EINVAL;
+	}
+
+	// Validate the generic part of the ioctl buffer. 
+	err = azihsm_ioctl_hsm_validate_argument(ctxt, arg,
+						  &user_data_xfer_cmd->generic_cmd,
+						  CP_CMD_SET_DATA_XFER);
+
+	if (err) {
+		AZIHSM_DEV_LOG_ERROR(
+			ctxt->hsm->cdev_dev,
+			"[%s:ERROR] Validation of ioctl buffer failed. err=%d\n",
+			__func__, err);
+
+		return err;
+	}
+
+	// Validate each of the data transfer buffers. 
+	for (i = 0; i < user_data_xfer_cmd->dataxfer_buffers.buffer_cnt; i++) {
+
+		if (user_data_xfer_cmd->dataxfer_buffers.buffers[i].xfer_length > AZIHSM_MAX_DATA_XFER_PER_BUFFER) {
+			AZIHSM_DEV_LOG_ERROR(
+				ctxt->hsm->cdev_dev,
+				"[%s:ERROR] Data transfer buffer[%d] length [%d] exceeds the maximum allowed [%d]\n",
+				__func__, i,
+				user_data_xfer_cmd->dataxfer_buffers.buffers[i].xfer_length,
+				AZIHSM_MAX_DATA_XFER_PER_BUFFER);
+			user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status =
+				AZIHSM_CP_GENERIC_IOCTL_INVALID_INPUT_BUFFER;
+			return -EINVAL;
+		}
+
+		// Both the transfer length and the buffer address must be non-zero. If either is zero, return error.
+		if (!user_data_xfer_cmd->dataxfer_buffers.buffers[i].xfer_length || !user_data_xfer_cmd->dataxfer_buffers.buffers[i].buf_addr) {
+
+			AZIHSM_DEV_LOG_ERROR(
+				ctxt->hsm->cdev_dev,
+				"[%s:ERROR] Data transfer buffer[%d] length is zero Or buffer address is NULL [%p]\n",
+				__func__, i,
+				user_data_xfer_cmd->dataxfer_buffers.buffers[i].buf_addr);
+
+			user_data_xfer_cmd->generic_cmd.out.u.generic.ioctl_extended_status =
+				AZIHSM_CP_GENERIC_IOCTL_INVALID_INPUT_BUFFER;
+
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
+
 static long azihsm_hsm_dev_ioctl(struct file *file, unsigned int ioctl_value,
 				 unsigned long arg)
 {
@@ -1378,6 +1936,7 @@ static long azihsm_hsm_dev_ioctl(struct file *file, unsigned int ioctl_value,
 		(struct azihsm_hsm_fd_ctxt *)(file->private_data);
 	struct azihsm_hsm *hsm;
 	struct azihsm_cp_generic_cmd cmd;
+	struct azihsm_ctrl_data_xfer_cmd *data_xfer_cmd;
 
 	if (!ctxt) {
 		AZIHSM_LOG_ERROR("%s failed. Ctxt is NULL. file:%p arg:%p\n",
@@ -1405,101 +1964,172 @@ static long azihsm_hsm_dev_ioctl(struct file *file, unsigned int ioctl_value,
 	memset(&cmd, 0, sizeof(cmd));
 
 	switch (ioctl_value) {
-	case AZIHSM_GET_DEV_INFO_IOCTL: {
-		if (AZIHSM_CTRL_IS_ABORT_IN_PROGRESS(hsm->ctrl)) {
-			AZIHSM_DEV_LOG_ERROR(
-				&hsm->pdev->dev,
-				"HSM ioctl: An abort is currently in progress on the controller. Retry command\n");
-
-			return -EAGAIN;
-		}
-
-		if (!AZIHSM_CTRL_ST_ISRDY(hsm->ctrl)) {
-			AZIHSM_DEV_LOG_ERROR(
-				&ctxt->hsm->pdev->dev,
-				"HSM DevInfo ioctl: Device is not ready. Unable to execute command on the device\n");
-			return -ENOTTY;
-		}
-
-		err = azihsm_ioctl_hsm_get_device_info(ctxt->hsm, arg);
-		if (err) {
-			AZIHSM_DEV_LOG_ERROR(
-				&hsm->pdev->dev,
-				"HSM ioctl: HSM_GET_DEVICE_INFO failed. hsm=%p arg=%p\n",
-				hsm, (void *)arg);
-		}
-		break;
-	}
-
-	case AZIHSM_CTRL_PATH_GENERIC_IOCTL_SESSION: {
-		err = azihsm_ioctl_hsm_validate_argument(ctxt, arg, &cmd);
-		if (err) {
-			AZIHSM_DEV_LOG_ERROR(
-				&hsm->pdev->dev,
-				"HSM ioctl: CTRL_PATH_CMD_NEW_IOCTL_SESSION. validation of input buffer failed. hsm=%p arg=%p\n",
-				hsm, (void *)arg);
-
-			if (copy_to_user((void __user *)arg, &cmd,
-					 sizeof(struct azihsm_cp_generic_cmd))) {
-				err = -EFAULT;
+		case AZIHSM_GET_DEV_INFO_IOCTL: {
+			if (AZIHSM_CTRL_IS_ABORT_IN_PROGRESS(hsm->ctrl)) {
 				AZIHSM_DEV_LOG_ERROR(
-					hsm->cdev_dev,
-					"[%s:ERROR] Error copying ioctl buffer back to user",
-					__func__);
+					&hsm->pdev->dev,
+					"HSM ioctl: An abort is currently in progress on the controller. Retry command\n");
+
+				return -EAGAIN;
+			}
+
+			if (!AZIHSM_CTRL_ST_ISRDY(hsm->ctrl)) {
+				AZIHSM_DEV_LOG_ERROR(
+					&ctxt->hsm->pdev->dev,
+					"HSM DevInfo ioctl: Device is not ready. Unable to execute command on the device\n");
+				return -ENOTTY;
+			}
+
+			err = azihsm_ioctl_hsm_get_device_info(ctxt->hsm, arg);
+			if (err) {
+				AZIHSM_DEV_LOG_ERROR(
+					&hsm->pdev->dev,
+					"HSM ioctl: HSM_GET_DEVICE_INFO failed. hsm=%p arg=%p\n",
+					hsm, (void *)arg);
 			}
 			break;
 		}
-		err = azihsm_ioctl_hsm_process_generic_ioctl_session(ctxt, hsm,
-								     &cmd, arg);
-		break;
-	}
 
-	case AZIHSM_AES_DEV_IOCTL_CMD_XTS:
-	case AZIHSM_AES_DEV_IOCTL_CMD_GCM: {
-		err = azihsm_aes_dev_ioctl(ctxt, &hsm->ctrl->aes, arg,
-					   ioctl_value);
-		if (err) {
-			AZIHSM_DEV_LOG_ERROR(
-				&hsm->pdev->dev,
-				"[MCR:ERROR] AES:ioctl: aes context:%p AES ioctl[%d] arg = %p ioctl failed err:%d\n",
-				&hsm->ctrl->aes, ioctl_value, (void *)arg, err);
+		case AZIHSM_CTRL_PATH_GENERIC_IOCTL_SESSION: {
+			err = azihsm_ioctl_hsm_validate_argument(ctxt, arg, &cmd,
+								     CP_CMD_SESSION_GENERIC);
+			if (err) {
+				AZIHSM_DEV_LOG_ERROR(
+					&hsm->pdev->dev,
+					"HSM ioctl: CTRL_PATH_CMD_NEW_IOCTL_SESSION. validation of input buffer failed. hsm=%p arg=%p\n",
+					hsm, (void *)arg);
+
+				if (copy_to_user((void __user *)arg, &cmd,
+						sizeof(struct azihsm_cp_generic_cmd))) {
+					err = -EFAULT;
+					AZIHSM_DEV_LOG_ERROR(
+						hsm->cdev_dev,
+						"[%s:ERROR] Error copying ioctl buffer back to user",
+						__func__);
+				}
+				break;
+			}
+			err = azihsm_ioctl_hsm_process_generic_ioctl_session(ctxt, hsm,
+										&cmd, arg);
+			break;
 		}
-		break;
-	}
+		case AZIHSM_CTRL_PATH_DATA_XFER: {
+
+			AZIHSM_DEV_LOG_INFO(
+				&hsm->pdev->dev,
+				"[REMOVE-ME] HSM ioctl: CTRL_PATH_DATA_XFER. hsm=%p arg=%p\n",
+				hsm, (void *)arg);
+
+			data_xfer_cmd = kzalloc(sizeof(*data_xfer_cmd), GFP_KERNEL);
+			if (!data_xfer_cmd) {
+				err = -ENOMEM;
+				break;
+			}
+
+			err = azihsm_ioctl_hsm_validate_data_xfer(ctxt, arg, data_xfer_cmd);
+
+			AZIHSM_DEV_LOG_INFO(
+				&hsm->pdev->dev,
+				"[REMOVE-ME] HSM ioctl: Validate Done Err:%d\n",
+				err);
+				
+			if (err) {
+				AZIHSM_DEV_LOG_ERROR(
+					&hsm->pdev->dev,
+					"HSM ioctl: CTRL_PATH_DATA_XFER. validation of input buffer failed. hsm=%p arg=%p\n",
+					hsm, (void *)arg);
+
+				if (copy_to_user((void __user *)arg, data_xfer_cmd,
+						sizeof(struct azihsm_ctrl_data_xfer_cmd))) {
+
+					err = -EFAULT;
+
+					AZIHSM_DEV_LOG_ERROR(
+						hsm->cdev_dev,
+						"[%s:ERROR] Error copying ioctl buffer back to user",
+						__func__);
+				}
+
+				kfree(data_xfer_cmd);
+				break;
+			}
+
+			// Process the validated Data Transfer command.
+			err = azihsm_ioctl_hsm_process_data_xfer(
+									ctxt,
+									hsm,
+									data_xfer_cmd,
+									arg);
+
+			AZIHSM_DEV_LOG_INFO(
+				&hsm->pdev->dev,
+				"[REMOVE-ME] HSM ioctl: azihsm_ioctl_hsm_process_data_xfer Done Err:%d\n",
+				err);
+
+			if (err) {
+				AZIHSM_DEV_LOG_ERROR(
+					&hsm->pdev->dev,
+					"HSM ioctl: CTRL_PATH_DATA_XFER. processing of data transfer command failed. hsm=%p arg=%p\n",
+					hsm, (void *)arg);
+			}
+
+			kfree(data_xfer_cmd);
+
+			AZIHSM_DEV_LOG_INFO(
+				&hsm->pdev->dev,
+				"[REMOVE-ME] HSM DataXfer ioctl: Done Err:%d\n",
+				err);
+			
+			break;
+		}
+
+		case AZIHSM_AES_DEV_IOCTL_CMD_XTS:
+		case AZIHSM_AES_DEV_IOCTL_CMD_GCM: {
+			err = azihsm_aes_dev_ioctl(ctxt, &hsm->ctrl->aes, arg,
+						ioctl_value);
+			if (err) {
+				AZIHSM_DEV_LOG_ERROR(
+					&hsm->pdev->dev,
+					"[MCR:ERROR] AES:ioctl: aes context:%p AES ioctl[%d] arg = %p ioctl failed err:%d\n",
+					&hsm->ctrl->aes, ioctl_value, (void *)arg, err);
+			}
+			break;
+		}
 
 #ifdef TEST_HOOK_SUPPORT
-	case AZIHSM_GET_DRIVER_TEST_HOOK_DATA:
-		err = azihsm_ioctl_hsm_get_test_hook_data(ctxt->hsm, arg);
-		if (err) {
-			AZIHSM_DEV_LOG_ERROR(
-				&hsm->pdev->dev,
-				"HSM ioctl: HSM_GET_DEVICE_INFO failed. hsm=%p arg=%p\n",
-				hsm, (void *)arg);
-		}
-		break;
+		case AZIHSM_GET_DRIVER_TEST_HOOK_DATA:
+			err = azihsm_ioctl_hsm_get_test_hook_data(ctxt->hsm, arg);
+			if (err) {
+				AZIHSM_DEV_LOG_ERROR(
+					&hsm->pdev->dev,
+					"HSM ioctl: HSM_GET_DEVICE_INFO failed. hsm=%p arg=%p\n",
+					hsm, (void *)arg);
+			}
+			break;
 #endif // TEST_HOOK_SUPPORT
 
-	case AZIHSM_IOCTL_RESET_DEVICE: {
-		err = azihsm_ioctl_reset_device(hsm->ctrl, arg);
-		if (err) {
-			AZIHSM_DEV_LOG_ERROR(
-				&hsm->pdev->dev,
-				"[ERROR] MCR_IOCTL_RESET_DEVICE: ioctl [%d] arg [%p]failed with error {err:%d]\n",
-				ioctl_value, (void *)arg, err);
+		case AZIHSM_IOCTL_RESET_DEVICE: {
+			err = azihsm_ioctl_reset_device(hsm->ctrl, arg);
+			if (err) {
+				AZIHSM_DEV_LOG_ERROR(
+					&hsm->pdev->dev,
+					"[ERROR] MCR_IOCTL_RESET_DEVICE: ioctl [%d] arg [%p]failed with error {err:%d]\n",
+					ioctl_value, (void *)arg, err);
+			}
+			break;
 		}
-		break;
-	}
 
 	// Legacy ioctl where no session information is encoded into the
 	// sqe.
-	case AZIHSM_CTRL_PATH_GENERIC_IOCTL: // We do not handle this anymore
-	default:
-		AZIHSM_DEV_LOG_ERROR(&hsm->pdev->dev,
-				     "%s. Unknown ioctl code:%d\n", __func__,
-				     ioctl_value);
-		err = -EBADRQC; // Invalid Request Code
-	}
+		case AZIHSM_CTRL_PATH_GENERIC_IOCTL: // We do not handle this anymore
+		default: {
+			AZIHSM_DEV_LOG_ERROR(&hsm->pdev->dev,
+						"%s. Unknown ioctl code:%d\n", __func__,
+						ioctl_value);
 
+			err = -EBADRQC; // Invalid Request Code
+		}
+	}
 	return err;
 }
 

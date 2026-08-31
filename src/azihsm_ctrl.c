@@ -393,6 +393,12 @@ int azihsm_ctrl_hw_disable(struct azihsm_ctrl *ctrl)
 	AZIHSM_DEV_LOG_ENTRY(&ctrl->pdev->dev, "%s azihsm_ctrl:%p\n", __func__,
 			     ctrl);
 
+	if ( !ctrl->reg ) {
+		AZIHSM_DEV_LOG_ERROR( &ctrl->pdev->dev,
+			"%s: Registers are not mapped, skipping the disable\n", __func__);
+		return 0;
+	}
+
 	// Clear the controller enable bit
 	cc.val = readl(&ctrl->reg->cc);
 	cc.fld.en = 0;
@@ -756,7 +762,7 @@ void azihsm_ctrl_sw_disable(struct azihsm_ctrl *ctrl, const bool abort)
 	AZIHSM_LOG_EXIT("%s azihsm_ctrl:%p\n", __func__, ctrl);
 }
 
-static void azihsm_setup_hmon(struct azihsm_ctrl *ctrl)
+void azihsm_setup_hmon(struct azihsm_ctrl *ctrl)
 {
 	if (!ctrl->hmon.init_done) {
 		AZIHSM_LOG_INFO("%s: Setting Up Health Mon Timer [%p]\n",
@@ -771,7 +777,7 @@ static void azihsm_setup_hmon(struct azihsm_ctrl *ctrl)
 	}
 }
 
-static void azihsm_cleanup_hmon(struct azihsm_ctrl *ctrl)
+void azihsm_cleanup_hmon(struct azihsm_ctrl *ctrl)
 {
 	AZIHSM_LOG_ENTRY("%s:Cleaning Up Health Moniter Timer [%p]\n", __func__,
 			 ctrl);
@@ -877,6 +883,8 @@ ioq_fail:
 int azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
 			u32 abort_type)
 {
+	int rc = 0;
+
 	AZIHSM_LOG_ENTRY("%s azihsm_ctrl:%p\n", __func__, ctrl);
 	/*
 	 * We are going to return error in case of abort
@@ -886,7 +894,6 @@ int azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
 	 * In abort, we do not want to reinitialize the controller
 	 * if the disable/NSSR itself fails.
 	*/
-	int rc = 0;
 	if (abort) {
 		//
 		// First disable the hardware if it was abort
@@ -925,7 +932,7 @@ int azihsm_ctrl_deinit(struct azihsm_ctrl *ctrl, const bool abort,
 		 */
 
 		AZIHSM_DEV_LOG_ALWAYS(&ctrl->pdev->dev, "L2-Abort: Kill Tasklet\n");
-        tasklet_kill(&ctrl->tasklet); // Guarantee that the running tasklets are finished and no other tasklets will be scheduled after this.
+		tasklet_kill(&ctrl->tasklet); // Guarantee that the running tasklets are finished and no other tasklets will be scheduled after this.
 
 		AZIHSM_DEV_LOG_ALWAYS(&ctrl->pdev->dev, "L2-Abort: Flushing all commands in HSM pool\n");
 		azihsm_ctrl_flush_cmds_from_ioqs(ctrl, &ctrl->hsm.ioq_pool);

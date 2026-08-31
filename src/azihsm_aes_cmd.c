@@ -65,6 +65,7 @@ void azihsm_aes_cmd_init(struct azihsm_aes_cmd *cmd, const u8 opc,
 int azihsm_aes_cmd_process(struct azihsm_aes *aes, struct azihsm_aes_cmd *cmd)
 {
 	int err = 0;
+	int err_abort = 0;
 	u16 tag = 0;
 	struct device *dev = &aes->pdev->dev;
 	unsigned long timeout = azihsm_abort_timeout_in_jiffies;
@@ -232,15 +233,14 @@ wait_fail:
 	// Note azihsm_abort can also fail if an existing thread
 	// performing level 2 abort failed and marked the device
 	// as non-operable.
-	err = azihsm_abort(aes->ctrl, ioq, &cmd->cmpl, false,
-			   ABORT_TYPE_TIMEOUT);
-	if (err)
+	err_abort = azihsm_abort(aes->ctrl, ioq, &cmd->cmpl, false,
+			   ABORT_TYPE_TIMEOUT, false);
+	if (err_abort)
 		/*
 		 * if abort is in progress, we need to make sure
 		 *  we free up this tag from our context store
 		 */
 		azihsm_ioq_cancel_cmd(ioq, tag);
-	err = -EAGAIN;
 submit_fail:
 	return err;
 }

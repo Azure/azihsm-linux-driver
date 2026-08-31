@@ -308,4 +308,6 @@ int azihsm_ctrl_hw_disable(struct azihsm_ctrl *ctrl);
 int azihsm_ctrl_hw_nssr(struct azihsm_ctrl *ctrl);
 int azihsm_ctrl_hw_enable(struct azihsm_ctrl *ctrl);
 int azihsm_ctrl_sw_enable(struct azihsm_ctrl *ctrl, const bool abort);
+void azihsm_setup_hmon(struct azihsm_ctrl *ctrl);
+void azihsm_cleanup_hmon(struct azihsm_ctrl *ctrl);
 #endif // _LINUX_AZIHSM_CTRL_H

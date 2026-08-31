@@ -449,12 +449,13 @@ static int azihsm_level_two_abort(struct azihsm_ctrl *ctrl, u32 abort_type)
  */
 int azihsm_abort(struct azihsm_ctrl *ctrl, struct azihsm_ioq *ioq,
 		 struct completion *completion_object, bool crash,
-		 u32 abort_type)
+		 u32 abort_type, bool called_from_hmon)
 {
 	struct device *dev = &ctrl->pdev->dev;
 	int rc = 0, err = 0;
 	int que_id = 0;
 	bool lvl1_abort = PERFORM_L1_ABORT(abort_type);
+	bool restart_hmon = false;
 
 	/*
 	 * We will not derference the queue id.
@@ -520,6 +521,18 @@ int azihsm_abort(struct azihsm_ctrl *ctrl, struct azihsm_ioq *ioq,
 	 */
 
 	/*
+	 * We may need to stop the hardware monitor while we do the reset to
+	 * avoid the very small possibility of a check occuring in the
+	 * middle of a reset. Only do this for the paths that are not
+	 * already running hmon code, ie skip the case of hmon performing
+	 * an abort.
+	 */
+	if( !called_from_hmon ) {
+		azihsm_cleanup_hmon(ctrl);
+		restart_hmon = true;
+	}
+
+	/*
 	 * Small wait for 100 Jiffies just to check if the command is completed or not.
 	 * If the command is completed, we are good. We do not need to do anything.
 	 * This can happen if some other thread acquired the mutex and completed
@@ -540,10 +553,15 @@ int azihsm_abort(struct azihsm_ctrl *ctrl, struct azihsm_ioq *ioq,
 			AZIHSM_CTRL_SET_ABORT_STATE(
 				ctrl, AZIHSM_CONTROLLER_IS_NOT_IN_ABORT);
 
+			/* If we stopped hmon above, restart it now */
+			if (restart_hmon )
+				azihsm_setup_hmon(ctrl);
+
 			mutex_unlock(&ctrl->abort_mutex);
 			return 0;
 		}
 	}
+
 
 	/* 
 	 * Command is not completed and it will never be completed
@@ -607,6 +625,13 @@ int azihsm_abort(struct azihsm_ctrl *ctrl, struct azihsm_ioq *ioq,
 	/* mark that the abort is done */
 	AZIHSM_CTRL_SET_ABORT_STATE(ctrl, AZIHSM_CONTROLLER_IS_NOT_IN_ABORT);
 
+	/*
+	 * If we stopped hmon above, and the device successfully initialized,
+	 * restart the hardware monitor now the reset is complete.
+	 */
+	if (rc == 0 && restart_hmon )
+		azihsm_setup_hmon(ctrl);
+
 	AZIHSM_DEV_LOG_EXIT(
 		dev,
 		"[Exit:%s] ctrl:%p return:%d abort is done. Controller is not in abort\n",
@@ -649,6 +674,16 @@ void azihsm_health_monitor(struct work_struct *work)
 	}
 
 	ctrl = hmon->ctrl;
+	/*
+	 * If the device is being reset, we cannot touch it. The register page
+	 * gets unmapped and remapped and touching it then will trigger a panic.
+	 */
+	if (!AZIHSM_CTRL_ST_ISRDY(ctrl)) {
+		pr_err("Cannot perform a health check during a reset!!!!");
+		schedule_delayed_work(&hmon->hmon_work, AZIHSM_HEALTH_MON_TIME);
+		return;
+		}
+
 	dev = &ctrl->pdev->dev;
 
 	csts.val = readl(&ctrl->reg->csts);
@@ -659,7 +694,7 @@ void azihsm_health_monitor(struct work_struct *work)
 			"[%s] ==== Health Monitor Detected FW Crash [Csts:%d] # PERFORMING RECOVERY # =====\n",
 			__func__, csts.val);
 
-		ret = azihsm_abort(ctrl, NULL, NULL, true, ABORT_TYPE_TIMEOUT);
+		ret = azihsm_abort(ctrl, NULL, NULL, true, ABORT_TYPE_TIMEOUT, true);
 		if (ret) {
 			AZIHSM_DEV_LOG_ERROR(
 				dev,

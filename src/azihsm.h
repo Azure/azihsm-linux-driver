@@ -11,7 +11,7 @@
 #include "azihsm_log.h"
 #include "azihsm_abort.h"
 
-#define AZIHSM_DRIVER_VERSION "3.2.26"
+#define AZIHSM_DRIVER_VERSION "3.2.120"
 
 struct azihsm_dev {
 	struct pci_dev *pdev;

@@ -51,6 +51,14 @@ void azihsm_ioq_perf_update_cntrs_after_submission(struct azihsm_hsm *hsm,
 	elapsed_time =
 		ktime_to_ns(ktime_sub(*completion_time, *submission_time));
 
+	/*
+	 * If the device is being reset, we cannot touch the ioqs as they
+	 * get removed and recreated dring the reset.
+	 */
+	if (!AZIHSM_CTRL_ST_ISRDY(hsm->ctrl)) {
+		pr_err("Ignoring perf counter update during a reset!!!!");
+		return;
+	}
 	if (elapsed_time >= ioq->sq.max_time_for_completion)
 		ioq->sq.max_time_for_completion = elapsed_time;
 

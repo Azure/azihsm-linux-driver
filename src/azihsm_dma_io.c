@@ -70,7 +70,7 @@ static void azihsm_dma_io_dbg_dump(struct azihsm_dma_io *dma_io, bool dump_all)
 
 	if (dma_io->hw_sgl_mem_kva && dma_io->hw_seg_cnt) {
 		AZIHSM_LOG_DEBUG(
-			"TO DO: Dumping HW SGL Assmues contiguous memory\nHW Desc Dump =======\n");
+			"TO DO: Dumping HW SGL Assumes contiguous memory\nHW Desc Dump =======\n");
 
 		/*
 		 * TO DO
@@ -219,7 +219,7 @@ static int azihsm_dma_io_create_sgl(struct pci_dev *pdev,
 	 *Set the first page in SGL
 	 */
 	sg_set_page(&dma_io->sg[pg_idx], // Pointer to the first SGL element
-		    dma_io->pages[pg_idx], // Pointer to the fist page
+		    dma_io->pages[pg_idx], // Pointer to the first page
 		    first_pglen, // The length of the first page
 		    first_pgoffset); // The offset of the first page
 
@@ -246,7 +246,7 @@ static int azihsm_dma_io_create_sgl(struct pci_dev *pdev,
 		sz_to_consume -= curr_pg_sz;
 	}
 
-	/*< Lets just make sure that the above code worked as we wxpwected it to */
+	/*< Lets just make sure that the above code worked as we expected it to */
 	BUG_ON(sz_to_consume != 0);
 
 	dma_io->sg_cnt = dma_map_sg(&pdev->dev, dma_io->sg, dma_io->page_cnt,
@@ -369,7 +369,7 @@ int azihsm_dma_io_init(
 			"%s: Failed To Get User Pages [Requested:%d Error:%d] [EIO]\n",
 			__func__, pg_cnt, npages_pinned);
 
-		// Just free the memory and reutrn
+		// Just free the memory and return
 		kfree(dma_io->pg_sg_mem);
 		dma_io->pg_sg_mem = NULL;
 		dma_io->pages = NULL;
@@ -449,7 +449,9 @@ void azihsm_dma_io_cleanup(struct azihsm_dma_io *dma_io)
 	 * free the memory that we allocated for
 	 * the pages pointer array and the sg list
 	 */
-	kfree(dma_io->pg_sg_mem);
+	if (dma_io->pg_sg_mem)
+		kfree(dma_io->pg_sg_mem);
+
 	dma_io->pg_sg_mem = NULL;
 	dma_io->sg = NULL;
 	dma_io->pages = NULL;
@@ -549,7 +551,7 @@ int azihsm_dma_io_xlat(struct azihsm_dma_io *dma_io)
 		if (rem_eles) {
 			/*
 			 * Next descriptor will always be page size unless it
-			 * is the last descripptor
+			 * is the last descriptor
 			 */
 			next_desc_len = PAGE_SIZE;
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include "azihsm_mgmt.h"
 #include "azihsm_ctrl_cmd.h"
 #include "azihsm.h"
@@ -390,6 +390,8 @@ device_create_fail:
 cdev_add_fail:
 	ida_free(&azihsm_mgmt_if_dev_ida, minor);
 ida_alloc_fail:
+	/* The caller of this is not looking at the return code, so just return 0.
+	 */
 	return 0;
 }
 

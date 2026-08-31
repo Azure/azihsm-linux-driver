@@ -18,6 +18,11 @@ azihsm-y += azihsm_ioq_perf.o
 
 ccflags-y += -Werror
 
+# Uncomment to enable the verbose ENTRY/EXIT/DEBUG driver logging in
+# azihsm_log.h for local debug work. Leave commented out for
+# production builds.
+# ccflags-y += -DDEBUG
+
 SRC := $(shell pwd)
 
 all:

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "azihsm_hsm.h"
 #include "azihsm_hsm_cmd.h"
@@ -214,7 +214,7 @@ wait_fail:
 	// performing level 2 abort failed and marked the device
 	// as non-operable.
 	err = azihsm_abort(hsm->ctrl, ioq, &cmd->cmpl, false,
-			   ABORT_TYPE_TIMEOUT);
+			   ABORT_TYPE_TIMEOUT, false);
 	if (err) {
 		/* if abort is in progress or abort has failed
 		 *  clean up our context from context store

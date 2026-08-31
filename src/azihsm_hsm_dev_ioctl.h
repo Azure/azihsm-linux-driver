@@ -7,12 +7,17 @@
 #include <linux/ioctl.h>
 #include "azihsm_ctrl_dev_ioctl.h"
 
-enum CP_CMD_SET { CP_CMD_SESSION_GENERIC = 0x0 };
+enum CP_CMD_SET {
+		CP_CMD_SESSION_GENERIC = 0x0,
+		CP_CMD_SET_DATA_XFER = 0x1
+	 };
+
 
 #define AZIHSM_OPCODE_FLOW_NO_SESSION 0
 #define AZIHSM_OPCODE_FLOW_OPEN_SESSION 1
 #define AZIHSM_OPCODE_FLOW_CLOSE_SESSION 2
 #define AZIHSM_OPCODE_FLOW_IN_SESSION 3
+
 
 #define AZIHSM_IOCTL_OPCODE_SESSION_VALID(_op_code)        \
 	((_op_code == AZIHSM_OPCODE_FLOW_NO_SESSION) ||    \
@@ -159,7 +164,7 @@ struct azihsm_cp_generic_cmd {
 #define AZIHSM_CTRL_PATH_GENERIC_IOCTL \
 	_IOWR('B', 0x2, struct azihsm_cp_generic_cmd)
 
-/*AZIHSM_CTRL_PATH_GENERIC_IOCTL_SESSION
+/* AZIHSM_CTRL_PATH_GENERIC_IOCTL_SESSION
  * This ioctl also uses the azihsm_cp_generic_cmd for the ioctl buffer
  * Session aware ioctl that allows caller to pass session opcode
  * and session id as part of the command to the device
@@ -174,6 +179,7 @@ struct azihsm_cp_generic_cmd {
  * This is available on the hsm interface
  */
 #define AZIHSM_GET_DEV_INFO_IOCTL _IOWR('B', 0x4, struct azihsm_ctrl_dev_info)
+
 
 #ifdef TEST_HOOK_SUPPORT
 struct azihsm_ctrl_test_hook_data {
@@ -234,5 +240,46 @@ struct reset_device_data {
 };
 
 #define AZIHSM_IOCTL_RESET_DEVICE _IOWR('B', 0x6, struct reset_device_data)
+
+
+/*
+ * struct azihsm_ctrl_data_xfer_cmd
+ * This structure is used for the data transfer ioctl.
+ * It contains the generic command structure and the data transfer buffers
+ * The data transfer buffers are defined in the azi_hsm_dataxfer_buffers structure
+ * The data transfer buffers can be used to transfer data to the device
+ * The maximum number of buffers is defined by AZIHSM_MAX_DATA_XFER_BUFFERS
+ * The maximum size of each buffer is defined by AZIHSM_MAX_DATA_XFER_PER_BUFFER
+ *
+ * Please note that this structure is defined this way for use to reuse the common IOCTL
+ * functionality which is already there azihsm_cp_generic_cmd. All the functions which takes
+ * azihsm_cp_generic_cmd as input will work with this structure as well.
+ *
+ * The only difference between this structure and azihsm_cp_generic_cmd is that this structure
+ * has data transfer buffers which are used to transfer data to the device. The data
+ * transfer buffers are defined in the azi_hsm_dataxfer_buffers structure.
+ *
+*/
+#define AZIHSM_MAX_DATA_XFER_BUFFERS 16
+#define AZIHSM_MAX_DATA_XFER_PER_BUFFER (64 * 1024)
+
+struct azi_hsm_dataxfer_buffers {
+	__u32 buffer_cnt;
+
+	struct {
+		__u32 xfer_length;
+		__u8 *buf_addr;
+	} buffers[AZIHSM_MAX_DATA_XFER_BUFFERS];
+
+	__u32 rsvd[128];
+};
+
+struct azihsm_ctrl_data_xfer_cmd {
+	struct azihsm_cp_generic_cmd generic_cmd;
+	struct azi_hsm_dataxfer_buffers dataxfer_buffers;
+};
+
+#define AZIHSM_CTRL_PATH_DATA_XFER \
+	_IOWR('B', 0x7, struct azihsm_ctrl_data_xfer_cmd)
 
 #endif //_LINUX_AZIHSM_HSM_DEV_IOCTL_H

@@ -64,15 +64,62 @@ struct __packed azihsm_hsm_session_ctrl_flags {
 static_assert(sizeof(struct azihsm_hsm_session_ctrl_flags) == 1);
 
 union __packed azihsm_hsm_generic_cmd_sqe_src_data {
-	struct _azihsm_hsm_sqe_session {
+
+	struct __packed _azihsm_hsm_sqe_session {
 		struct azihsm_hsm_session_ctrl_flags session_ctrl_flags;
 		u8 rsvd_1[3];
 		u16 session_id;
 		u8 rsvd_2[14];
 	} session_data;
 
+	struct __packed _azihsm_hsm_sqe_metadata_with_session{
+		struct azihsm_hsm_session_ctrl_flags session_ctrl_flags;
+		u8 rsvd_1[3];
+		u16 session_id;
+		u8 rsvd_2[2];
+		u64 metadata_page_addr;
+		u8 rsvd_3[4];
+	} metadata_with_session;
+
 	u8 val[20];
 };
+
+static_assert(sizeof(union azihsm_hsm_generic_cmd_sqe_src_data) == 20);
+
+struct __packed azihsm_hsm_data_xfer_buffer {
+	uint32_t xfer_length;
+	uint32_t rsvd;
+	uint64_t hw_sgl_mem_paddr;
+};
+
+/*
+ * AZIHSM_MAX_DATA_XFER_BUFFERS
+ * This is the maximum number of buffers that can be transferred in a single data transfer command.
+ * This is defined by the device.
+ * There is a duplicate constant which is defined in azihsm_hsm_dev_ioctl.h.
+ * That constant is used to define the max buffers the application can send in the data transfer command.
+ * The device can support more buffers than the application can send.
+ * This is a device facing variable while the other is an application facing constant.
+*/
+
+#define AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS 16
+#define METADATA_SIZE 4096
+/*
+ * This metadata buffer cannot exceed 1 page in size.
+ * This buffer just points to physical addresses of the SGLs
+ * for each of the buffers in the data transfer command.
+*/
+struct __packed azihsm_hsm_data_xfer_metadata {
+
+	uint32_t buffer_count;
+	struct azihsm_hsm_data_xfer_buffer buffers[AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS];
+
+	uint8_t rsvd[METADATA_SIZE - sizeof(uint32_t) -
+		(sizeof(struct azihsm_hsm_data_xfer_buffer) *
+		 AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS)];
+};
+
+static_assert(sizeof(struct azihsm_hsm_data_xfer_metadata) == METADATA_SIZE);
 
 /*
  * azihsm_hsm_cmd_generic_sqe

@@ -214,7 +214,7 @@ wait_fail:
 	// performing level 2 abort failed and marked the device
 	// as non-operable.
 	err = azihsm_abort(hsm->ctrl, ioq, &cmd->cmpl, false,
-			   ABORT_TYPE_TIMEOUT);
+			   ABORT_TYPE_TIMEOUT, false);
 	if (err) {
 		/* if abort is in progress or abort has failed
 		 *  clean up our context from context store

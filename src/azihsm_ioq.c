@@ -440,8 +440,11 @@ sbitmap_alloc_fail:
 
 static void azihsm_ioq_store_deinit(struct azihsm_ioq_store *store)
 {
-	xa_destroy(&store->ctx_store);
-	sbitmap_queue_free(&store->bitmap);
+	if ( store->size > 0 ) {
+		xa_destroy(&store->ctx_store);
+		sbitmap_queue_free(&store->bitmap);
+		store->size = 0;
+	}
 }
 
 /*

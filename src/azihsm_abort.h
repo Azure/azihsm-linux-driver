@@ -42,7 +42,7 @@ enum IOQ_CMD_INTERNAL_STS {
 
 int azihsm_abort(struct azihsm_ctrl *ctrl, struct azihsm_ioq *ioq,
 		 struct completion *completion_object, bool crash,
-		 u32 abort_type);
+		 u32 abort_type, bool called_from_hmon);
 
 /**
  * azihsm_ctrl_cmd_delete_sq(). Delete a SQ

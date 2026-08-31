@@ -1135,8 +1135,8 @@ azihsm_aes_dev_enc_dec_ioctl(struct azihsm_aes *aes,
 
 		AZIHSM_DEV_LOG_ERROR(
 			&aes->pdev->dev,
-			"%s: azihsm_aes_cmd_process Failed [rc:%d] [extended_sts:0x%x]\n",
-			__func__, rc, out_data->extended_status);
+			"%s: azihsm_aes_cmd_process Failed [rc:%d] [extended_sts:0x%x][completion_status:0x%x]\n",
+			__func__, rc, out_data->extended_status, aes_cmd.completion_status);
 
 		out_data->byte_count = 0;
 		out_data->extended_status = aes_cmd.completion_status;
@@ -1218,12 +1218,12 @@ int azihsm_aes_dev_ioctl(struct azihsm_hsm_fd_ctxt *ctxt,
 			aes_ioctl_buffer.out_data.extended_status);
 	}
 
-	err = copy_to_user((void *)arg, (void *)&aes_ioctl_buffer,
-			   sizeof(struct aes_ioctl_inout_data));
-
-	if (err)
+	if (copy_to_user((void *)arg, (void *)&aes_ioctl_buffer,
+			   sizeof(struct aes_ioctl_inout_data))) {
 		AZIHSM_DEV_LOG_ERROR(&aes->pdev->dev,
 				     "[%s:] copy To user failed", __func__);
+		err = -EFAULT;
+	}
 	return err;
 }
 

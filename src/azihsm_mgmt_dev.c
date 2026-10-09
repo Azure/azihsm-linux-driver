@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include "azihsm_mgmt.h"
 #include "azihsm_ctrl_cmd.h"
 #include "azihsm.h"

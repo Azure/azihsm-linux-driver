@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef _LINUX_AZIHSM_AES_CMDS_H
 #define _LINUX_AZIHSM_AES_CMDS_H
 

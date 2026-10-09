@@ -39,7 +39,7 @@ make
 
 ## License
 
-This driver is licensed under **GPLv2-or-later**. See `LICENSE.md` for details.
+This driver is licensed under the **GNU General Public License, version 2 or (at your option) any later version** (`GPL-2.0-or-later`). See [LICENSE](LICENSE) for the full license text.
 
 ---
 

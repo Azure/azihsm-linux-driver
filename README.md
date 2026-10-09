@@ -1,45 +1,46 @@
 
 # Azure Integrated HSM Linux Driver
 
----
-
 ## Overview
 
-This directory contains the Linux kernel driver source code for the **Azure Integrated HSM** Device.
-
----
+This repository contains the Linux kernel driver source code for the **Azure Integrated HSM** device.
 
 ## Build Instructions
 
 ### Prerequisites
 
-- Linux kernel headers
-- GCC, Make, and build essentials
+- A C compiler and GNU Make
+- The Linux kernel headers or build tree for the kernel you want to build against
 
-### Build Clean Option
-``` 
+### Build
+
+Set `KERNEL_SRC` to the kernel build directory. To build for the currently running kernel:
+
+```bash
 cd src
+make KERNEL_SRC="/lib/modules/$(uname -r)/build"
+```
+
+To build for a different kernel, provide its build directory instead. For example:
+
+```bash
+cd src
+make KERNEL_SRC=/usr/src/linux-headers-6.5.0-1023-azure
+```
+
+The build produces `src/azihsm.ko`.
+
+### Clean
+
+Run this from the `src` directory to remove generated build files:
+
+```bash
 make clean
 ```
 
-### Build Steps
-```bash
-cd src
-export KERNEL_SRC= "Path To Kernel Headers Directory"
-make
-
-#### Example Buliding For 6.5.0-1023-azure
-    cd src
-    export KERNEL_SRC=/usr/src/linux-headers-6.5.0-1023-azure
-    make
-    ==>> This will generate a AziHsm.ko file.
-```
-
----
-
 ## License
 
-This driver is licensed under **GPLv2-or-later**. See `LICENSE.md` for details.
+This driver is licensed under **GPL-2.0-only**. See [COPYING](COPYING) for the full license text.
 
 ---
 

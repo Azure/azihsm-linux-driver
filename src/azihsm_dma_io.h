@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 
 #ifndef _AZIHSM_DMA_IO_HEADER_
 #define _AZIHSM_DMA_IO_HEADER_

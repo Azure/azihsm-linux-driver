@@ -32,4 +32,4 @@ Give very detailed instructions on your PR procedure to ensure contributions are
 
 ## License Information
 
-This driver is licensed under **GPL-2.0-or-later**. See [`COPYING`](COPYING) for the full license text.
+This driver is licensed under **GPL-2.0-or-later**. See [`LICENSE`](LICENSE) for the full license text.

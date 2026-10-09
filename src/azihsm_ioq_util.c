@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include <linux/kernel.h>
 #include <linux/completion.h>
 #include "azihsm_ioq_util.h"

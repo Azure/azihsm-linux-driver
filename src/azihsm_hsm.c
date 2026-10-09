@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "azihsm_hsm.h"
 #include "azihsm_hsm_cmd.h"

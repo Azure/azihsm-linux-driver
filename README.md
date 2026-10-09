@@ -40,7 +40,7 @@ make clean
 
 ## License
 
-This driver is licensed under **GPL-2.0-only**. See [COPYING](COPYING) for the full license text.
+This driver is licensed under **GPL-2.0-or-later**. See [COPYING](COPYING) for the full license text.
 
 ---
 

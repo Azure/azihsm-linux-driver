@@ -111,7 +111,7 @@ struct __packed azihsm_hsm_data_xfer_metadata {
 
 	struct azihsm_dma_io_sgl_desc sgl_desc_first[AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS];
 
-	uint8_t rsvd[METADATA_SIZE -
+	u8 rsvd[METADATA_SIZE -
 		(sizeof(struct azihsm_dma_io_sgl_desc) *
 		 AZIHSM_MAX_DATA_XFER_DEVICE_BUFFERS)];
 };

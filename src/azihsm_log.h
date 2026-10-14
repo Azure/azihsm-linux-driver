@@ -33,7 +33,7 @@ extern unsigned int log_mask;
  * DEBUG/ENTRY/EXIT logging is verbose and can expose internal driver
  * state (pointers, buffer contents, call flow) that must not be
  * compiled into production builds. These macros are only compiled in
- * when DEBUG is defined (see Kbuild.in), which keeps this tracing
+ * when DEBUG is defined (see Makefile), which keeps this tracing
  * readily available for debug builds while the log_mask module
  * parameter still gates the actual runtime output. When DEBUG is not
  * defined, no_printk() is used so the calls still type-check but emit

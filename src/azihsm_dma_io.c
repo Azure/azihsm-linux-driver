@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 //#define DMA_IO_DEBUG_ON 1
 
 #include <linux/mm.h>
+#include <linux/overflow.h>
 #include "azihsm_ioq.h"
 #include "azihsm_dma_io.h"
 #include "azihsm_log.h"
@@ -70,7 +71,7 @@ static void azihsm_dma_io_dbg_dump(struct azihsm_dma_io *dma_io, bool dump_all)
 
 	if (dma_io->hw_sgl_mem_kva && dma_io->hw_seg_cnt) {
 		AZIHSM_LOG_DEBUG(
-			"TO DO: Dumping HW SGL Assmues contiguous memory\nHW Desc Dump =======\n");
+			"TO DO: Dumping HW SGL Assumes contiguous memory\nHW Desc Dump =======\n");
 
 		/*
 		 * TO DO
@@ -109,11 +110,23 @@ static int azihsm_dma_io_compute_pages(void *ubuff, u32 ubuff_sz)
 {
 	u32 n_pages = 0;
 	unsigned long start = 0, end = 0, uaddr = 0, count = 0;
+	unsigned long sum = 0, span = 0;
 
 	uaddr = (unsigned long)ubuff;
 	count = (unsigned long)ubuff_sz;
 
-	end = (uaddr + count + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	/*
+	 * Defense-in-depth: uaddr + count + (PAGE_SIZE - 1) is computed with
+	 * checked arithmetic so an overflow here is detected and rejected
+	 * (returns 0, which callers already treat as a failure) instead of
+	 * silently wrapping, even though uaddr/count are presently bounded
+	 * such that this cannot occur in practice.
+	 */
+	if (check_add_overflow(uaddr, count, &sum) ||
+	    check_add_overflow(sum, (unsigned long)(PAGE_SIZE - 1), &span))
+		return 0;
+
+	end = span >> PAGE_SHIFT;
 	start = uaddr >> PAGE_SHIFT;
 
 	n_pages = end - start;
@@ -171,6 +184,7 @@ static void azihsm_dma_io_free_coh_mem(struct azihsm_dma_io *dma_io)
 static int azihsm_dma_io_alloc_coh_mem(struct azihsm_dma_io *dma_io)
 {
 	u32 seg_cnt = 0;
+	u32 coh_mem_sz = 0;
 	u32 data_desc_cnt_per_seg =
 		(PAGE_SIZE / sizeof(struct azihsm_dma_io_sgl_desc)) - 1;
 
@@ -180,8 +194,19 @@ static int azihsm_dma_io_alloc_coh_mem(struct azihsm_dma_io *dma_io)
 	 */
 	seg_cnt = (dma_io->sg_cnt / data_desc_cnt_per_seg) + 1;
 
-	// Total memory size
-	dma_io->coh_mem_sz = (seg_cnt * PAGE_SIZE);
+	// Total memory size, computed with checked multiplication
+	// (defense-in-depth) so an overflow is rejected rather than
+	// silently truncating the size handed to dma_alloc_coherent().
+	if (check_mul_overflow(seg_cnt, (u32)PAGE_SIZE, &coh_mem_sz)) {
+		AZIHSM_DEV_LOG_ERROR(
+			&dma_io->pdev->dev,
+			"%s: Allocation Size Overflow Computing Coherent Mem Size [seg_cnt:%u] [ENOMEM]\n",
+			__func__, seg_cnt);
+
+		return -ENOMEM;
+	}
+
+	dma_io->coh_mem_sz = coh_mem_sz;
 
 	dma_io->hw_sgl_mem_kva =
 		dma_alloc_coherent(&dma_io->pdev->dev, dma_io->coh_mem_sz,
@@ -219,7 +244,7 @@ static int azihsm_dma_io_create_sgl(struct pci_dev *pdev,
 	 *Set the first page in SGL
 	 */
 	sg_set_page(&dma_io->sg[pg_idx], // Pointer to the first SGL element
-		    dma_io->pages[pg_idx], // Pointer to the fist page
+		    dma_io->pages[pg_idx], // Pointer to the first page
 		    first_pglen, // The length of the first page
 		    first_pgoffset); // The offset of the first page
 
@@ -246,7 +271,7 @@ static int azihsm_dma_io_create_sgl(struct pci_dev *pdev,
 		sz_to_consume -= curr_pg_sz;
 	}
 
-	/*< Lets just make sure that the above code worked as we wxpwected it to */
+	/*< Lets just make sure that the above code worked as we expected it to */
 	BUG_ON(sz_to_consume != 0);
 
 	dma_io->sg_cnt = dma_map_sg(&pdev->dev, dma_io->sg, dma_io->page_cnt,
@@ -290,6 +315,7 @@ int azihsm_dma_io_init(
 	int npages_pinned = 0;
 	int rw_flags = 0;
 	u32 sz_to_alloc = 0;
+	u32 sg_arr_sz = 0, pg_arr_sz = 0;
 	int rc = 0;
 
 	if (!pdev)
@@ -332,11 +358,20 @@ int azihsm_dma_io_init(
 	 * https://stackoverflow.com/questions/58413297/how-to-avoid-high-cpu-usage-while-reading-writing-character-device
 	 */
 
-	// The size of the scatter gather list that we need
-	sz_to_alloc = sizeof(struct scatterlist) * pg_cnt;
+	// The size of the scatter gather list and page array we need,
+	// computed with checked arithmetic (defense-in-depth) so an
+	// overflow is rejected rather than silently truncating the
+	// allocation handed to kzalloc().
+	if (check_mul_overflow((u32)sizeof(struct scatterlist), pg_cnt, &sg_arr_sz) ||
+	    check_mul_overflow((u32)sizeof(struct page *), pg_cnt, &pg_arr_sz) ||
+	    check_add_overflow(sg_arr_sz, pg_arr_sz, &sz_to_alloc)) {
+		AZIHSM_DEV_LOG_ERROR(
+			&pdev->dev,
+			"%s: Allocation Size Overflow Computing SG/Page Array Size [pg_cnt:%u] [EINVAL]\n",
+			__func__, pg_cnt);
 
-	//Add the size of the page array that we need to allocate
-	sz_to_alloc += sizeof(struct page *) * pg_cnt;
+		return -EINVAL;
+	}
 
 	dma_io->pg_sg_mem = kzalloc(sz_to_alloc, GFP_KERNEL);
 
@@ -369,7 +404,7 @@ int azihsm_dma_io_init(
 			"%s: Failed To Get User Pages [Requested:%d Error:%d] [EIO]\n",
 			__func__, pg_cnt, npages_pinned);
 
-		// Just free the memory and reutrn
+		// Just free the memory and return
 		kfree(dma_io->pg_sg_mem);
 		dma_io->pg_sg_mem = NULL;
 		dma_io->pages = NULL;
@@ -433,7 +468,7 @@ void azihsm_dma_io_cleanup(struct azihsm_dma_io *dma_io)
 	 * pci mapping.
 	 */
 	if (dma_io->sg_cnt > 0) {
-		dma_unmap_sg(&dma_io->pdev->dev, dma_io->sg, dma_io->sg_cnt,
+		dma_unmap_sg(&dma_io->pdev->dev, dma_io->sg, dma_io->page_cnt,
 			     dma_io->dir);
 
 		dma_io->sg_cnt = 0;
@@ -449,7 +484,9 @@ void azihsm_dma_io_cleanup(struct azihsm_dma_io *dma_io)
 	 * free the memory that we allocated for
 	 * the pages pointer array and the sg list
 	 */
-	kfree(dma_io->pg_sg_mem);
+	if (dma_io->pg_sg_mem)
+		kfree(dma_io->pg_sg_mem);
+
 	dma_io->pg_sg_mem = NULL;
 	dma_io->sg = NULL;
 	dma_io->pages = NULL;
@@ -549,7 +586,7 @@ int azihsm_dma_io_xlat(struct azihsm_dma_io *dma_io)
 		if (rem_eles) {
 			/*
 			 * Next descriptor will always be page size unless it
-			 * is the last descripptor
+			 * is the last descriptor
 			 */
 			next_desc_len = PAGE_SIZE;
 

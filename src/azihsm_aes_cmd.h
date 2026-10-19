@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+// SPDX-License-Identifier: GPL-2.0-or-later
 #ifndef _LINUX_AZIHSM_AES_CMDS_H
 #define _LINUX_AZIHSM_AES_CMDS_H
 
@@ -205,7 +205,17 @@ void azihsm_aes_cmd_init(struct azihsm_aes_cmd *cmd, const u8 opc,
 
 int azihsm_aes_cmd_process(struct azihsm_aes *aes, struct azihsm_aes_cmd *cmd);
 
+/*
+ * These dump routines log full command buffers (keys, IVs, tags,
+ * addresses) and must not be compiled into production builds. See the
+ * DEBUG gating comment above AZIHSM_LOG_DEBUG in azihsm_log.h.
+ */
+#ifdef DEBUG
 void dump_aes_cmd_sqe(struct azihsm_aes_cmd *cmd);
 void dump_aes_cmd_cqe(struct azihsm_aes_cmd *cmd);
+#else
+static inline void dump_aes_cmd_sqe(struct azihsm_aes_cmd *cmd) { }
+static inline void dump_aes_cmd_cqe(struct azihsm_aes_cmd *cmd) { }
+#endif
 
 #endif // _LINUX_AZIHSM_AES_CMDS_H

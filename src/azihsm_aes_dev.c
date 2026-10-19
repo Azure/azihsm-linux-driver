@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "azihsm_errors.h"
 #include "azihsm_aes_dev.h"
@@ -775,6 +775,19 @@ static int azihsm_aes_dev_validate_ioctl(
 	}
 
 	if(aes_ioctl_buffer->in_data.UserBuff.src_ptr && aes_ioctl_buffer->in_data.UserBuff.src_len) {
+		if (aes_ioctl_buffer->in_data.UserBuff.src_len > AZIHSM_AES_MAX_USER_BUFF_SZ) {
+			aes_ioctl_buffer->out_data.byte_count = 0;
+			aes_ioctl_buffer->out_data.extended_status =
+				AZIHSM_FP_IOCTL_INVALID_INPUT_BUFFER;
+			AZIHSM_DEV_LOG_ERROR(
+				ctxt->hsm->cdev_dev,
+				"[%s:ERROR] Source Buffer Length Exceeds Max [len->%u:max->%u]\n",
+				__func__, aes_ioctl_buffer->in_data.UserBuff.src_len,
+				AZIHSM_AES_MAX_USER_BUFF_SZ);
+			rc = -EINVAL;
+			goto validate_done;
+		}
+
 		if (!access_ok(aes_ioctl_buffer->in_data.UserBuff.src_ptr,
 				aes_ioctl_buffer->in_data.UserBuff.src_len)) {
 			aes_ioctl_buffer->out_data.byte_count = 0;
@@ -791,6 +804,19 @@ static int azihsm_aes_dev_validate_ioctl(
 	}
 
 	if(aes_ioctl_buffer->in_data.UserBuff.dst_ptr &&  aes_ioctl_buffer->in_data.UserBuff.dst_len) {
+		if (aes_ioctl_buffer->in_data.UserBuff.dst_len > AZIHSM_AES_MAX_USER_BUFF_SZ) {
+			aes_ioctl_buffer->out_data.byte_count = 0;
+			aes_ioctl_buffer->out_data.extended_status =
+				AZIHSM_FP_IOCTL_INVALID_OUTPUT_BUFFER;
+			AZIHSM_DEV_LOG_ERROR(
+				ctxt->hsm->cdev_dev,
+				"[%s:ERROR] Destination Buffer Length Exceeds Max [len->%u:max->%u]\n",
+				__func__, aes_ioctl_buffer->in_data.UserBuff.dst_len,
+				AZIHSM_AES_MAX_USER_BUFF_SZ);
+			rc = -EINVAL;
+			goto validate_done;
+		}
+
 		if (!access_ok(aes_ioctl_buffer->in_data.UserBuff.dst_ptr,
 				aes_ioctl_buffer->in_data.UserBuff.dst_len)) {
 			aes_ioctl_buffer->out_data.byte_count = 0;
@@ -1135,8 +1161,8 @@ azihsm_aes_dev_enc_dec_ioctl(struct azihsm_aes *aes,
 
 		AZIHSM_DEV_LOG_ERROR(
 			&aes->pdev->dev,
-			"%s: azihsm_aes_cmd_process Failed [rc:%d] [extended_sts:0x%x]\n",
-			__func__, rc, out_data->extended_status);
+			"%s: azihsm_aes_cmd_process Failed [rc:%d] [extended_sts:0x%x][completion_status:0x%x]\n",
+			__func__, rc, out_data->extended_status, aes_cmd.completion_status);
 
 		out_data->byte_count = 0;
 		out_data->extended_status = aes_cmd.completion_status;
@@ -1218,19 +1244,25 @@ int azihsm_aes_dev_ioctl(struct azihsm_hsm_fd_ctxt *ctxt,
 			aes_ioctl_buffer.out_data.extended_status);
 	}
 
-	err = copy_to_user((void *)arg, (void *)&aes_ioctl_buffer,
-			   sizeof(struct aes_ioctl_inout_data));
-
-	if (err)
+	if (copy_to_user((void *)arg, (void *)&aes_ioctl_buffer,
+			   sizeof(struct aes_ioctl_inout_data))) {
 		AZIHSM_DEV_LOG_ERROR(&aes->pdev->dev,
 				     "[%s:] copy To user failed", __func__);
+		err = -EFAULT;
+	}
 	return err;
 }
 
 
 /*
  * Debug routines
+ *
+ * These dump full command buffers, including keys, IVs, tags and user
+ * pointers, so they are compiled out entirely unless DEBUG is defined
+ * (see the no-op inline stubs declared in azihsm_aes_dev_ioctl.h and
+ * azihsm_aes_cmd.h).
  */
+#ifdef DEBUG
 void
 dump_aes_in_data(struct aes_ioctl_indata *in_data)
 {
@@ -1428,4 +1460,5 @@ dump_aes_cmd_cqe(struct azihsm_aes_cmd *cmd)
 	/* dma_io_src */
 	/* io_data */
 }
+#endif // DEBUG
 

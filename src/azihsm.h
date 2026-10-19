@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef _LINUX_AZIHSM_H
 #define _LINUX_AZIHSM_H
@@ -11,7 +11,7 @@
 #include "azihsm_log.h"
 #include "azihsm_abort.h"
 
-#define AZIHSM_DRIVER_VERSION "3.2.26"
+#define AZIHSM_DRIVER_VERSION "3.2.165.1"
 
 struct azihsm_dev {
 	struct pci_dev *pdev;

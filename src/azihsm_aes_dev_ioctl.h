@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+// SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef _LINUX_AZIHSM_AES_DEV_IOCTL_H
 #define _LINUX_AZIHSM_AES_DEV_IOCTL_H
@@ -16,6 +16,17 @@
 #define AZIHSM_AES_GCM_DATA_SZ_ALIGNMENT_BYTES	16
 #define AZIHSM_MAX_UNALIGNED_DATA_SZ		(AZIHSM_AES_GCM_DATA_SZ_ALIGNMENT_BYTES - 1)
 #define AZIHSM_IS_AAD_ALIGNED(_size,_align) (((_size) % (_align)) == 0)
+
+/*
+ * Upper bound (defense-in-depth) on a single AES fast-path source/
+ * destination user buffer. This is well above any real crypto workload
+ * size, but keeps the page-count/allocation-size arithmetic derived from
+ * this length (azihsm_dma_io_init/azihsm_dma_io_alloc_coh_mem) far away
+ * from any risk of 32-bit overflow, and mirrors the per-buffer cap
+ * (AZIHSM_MAX_DATA_XFER_PER_BUFFER) already enforced on the generic
+ * data-transfer ioctl path.
+ */
+#define AZIHSM_AES_MAX_USER_BUFF_SZ (16U * 1024U * 1024U)
 
 //Define the fast path operation codes here
 enum azihsm_aes_op_code {
@@ -160,7 +171,17 @@ int azihsm_aes_dev_ioctl(struct azihsm_hsm_fd_ctxt *ctxt,
 			 struct azihsm_aes *aes, unsigned long arg,
 			 unsigned int ioctl_code);
 
+/*
+ * These dump routines log full command buffers (keys, IVs, tags, user
+ * pointers) and must not be compiled into production builds. See the
+ * DEBUG gating comment above AZIHSM_LOG_DEBUG in azihsm_log.h.
+ */
+#ifdef DEBUG
 void dump_aes_in_data(struct aes_ioctl_indata *in);
 void dump_aes_out_data(struct aes_ioctl_outdata *out);
+#else
+static inline void dump_aes_in_data(struct aes_ioctl_indata *in) { }
+static inline void dump_aes_out_data(struct aes_ioctl_outdata *out) { }
+#endif
 
 #endif //_LINUX_AZIHSM_AES_DEV_IOCTL_H
